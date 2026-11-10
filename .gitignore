@@ -1,2 +1,17 @@
 .claude/
 .planning/
+.venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+uv.lock

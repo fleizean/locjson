@@ -43,3 +43,139 @@ include = ["src/locjson", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pypr
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/locjson"]
+
+[dependency-groups]
+test = ["pytest>=9.0", "pytest-cov>=7.0", "coverage[toml]>=7.10"]
+lint = ["ruff>=0.17", "mypy>=2.4", "import-linter>=2.16"]
+dev = [{ include-group = "test" }, { include-group = "lint" }]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+preview = true
+explicit-preview-rules = true
+select = [
+  "F", "E", "W",
+  "I",
+  "N",
+  "D",
+  "UP",
+  "B",
+  "A",
+  "C4",
+  "FBT",
+  "S",
+  "BLE",
+  "T20",
+  "PT",
+  "RET", "SIM", "PIE", "RSE",
+  "SLF",
+  "TID",
+  "TC",
+  "ARG",
+  "PTH",
+  "ERA",
+  "PL",
+  "TRY",
+  "PERF", "FURB",
+  "LOG", "G",
+  "ISC",
+  "RUF",
+  "PLW1514",
+]
+ignore = ["D105", "D107", "TRY003", "PLR0913", "COM812"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+required-imports = ["from __future__ import annotations"]
+known-first-party = ["locjson"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+banned-module-level-imports = [
+  "babel",
+  "watchfiles",
+  "argparse",
+  "ast",
+  "tomllib",
+  "logging",
+  "dataclasses",
+  "inspect",
+  "locjson.cli",
+  "locjson.analysis",
+]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"importlib.metadata".msg = "Use locjson._version; importlib.metadata is slow to import"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "S101", "S603", "PLR2004", "SLF001", "ARG", "FBT", "TID253"]
+"src/locjson/locale.py" = ["A005"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+  "ignore-without-code",
+  "redundant-expr",
+  "redundant-self",
+  "truthy-bool",
+  "truthy-iterable",
+  "possibly-undefined",
+  "explicit-override",
+  "mutable-override",
+  "unimported-reveal",
+  "deprecated",
+  "exhaustive-match",
+  "unused-awaitable",
+]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "-ra"]
+strict = true
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["locjson"]
+relative_files = true
+
+[tool.coverage.paths]
+source = ["src/locjson", "*/src/locjson", "*/site-packages/locjson"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = [
+  '@(typing\.)?overload',
+  'raise NotImplementedError',
+  'assert_never\(',
+  'if __name__ == .__main__.:',
+]
+
+[tool.importlinter]
+root_package = "locjson"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Runtime never imports CLI-only or optional modules"
+type = "forbidden"
+source_modules = ["locjson"]
+forbidden_modules = ["argparse", "ast", "tomllib", "babel", "watchfiles"]
