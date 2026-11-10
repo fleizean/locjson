@@ -55,6 +55,8 @@ src = ["src", "tests"]
 
 [tool.ruff.format]
 docstring-code-format = true
+# Ruff 0.17 also formats Python blocks in Markdown; docs keep aligned "# ->" comments.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 preview = true
@@ -179,3 +181,14 @@ name = "Runtime never imports CLI-only or optional modules"
 type = "forbidden"
 source_modules = ["locjson"]
 forbidden_modules = ["argparse", "ast", "tomllib", "babel", "watchfiles"]
+
+[[tool.importlinter.contracts]]
+name = "Runtime layers"
+type = "layers"
+containers = ["locjson"]
+layers = [
+  "localizer",
+  "loaders : catalog",
+  "locale : formatting : _jsonio",
+  "errors : _compat",
+]

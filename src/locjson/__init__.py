@@ -11,11 +11,12 @@ from locjson.errors import (
     LocJsonError,
     MissingTranslationError,
 )
-from locjson.loaders import FilesystemLoader, Loader, RawSource
+from locjson.loaders import DictLoader, FilesystemLoader, Loader, RawSource
 from locjson.localizer import Localizer
 
 __all__ = [
     "ConfigurationError",
+    "DictLoader",
     "FilesystemLoader",
     "InterpolationError",
     "InvalidCatalogError",
