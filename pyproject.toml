@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "locjson"
+dynamic = ["version"]
+description = "Typed, zero-dependency JSON localization for Python"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Enes Yağız" }]
+keywords = ["i18n", "l10n", "localization", "translation", "json", "plural", "cldr"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
+  "Topic :: Software Development :: Internationalization",
+  "Topic :: Software Development :: Localization",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/fleizean/locjson"
+Source = "https://github.com/fleizean/locjson"
+Issues = "https://github.com/fleizean/locjson/issues"
+Changelog = "https://github.com/fleizean/locjson/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/locjson/_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/locjson", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/locjson"]
