@@ -116,7 +116,7 @@ banned-module-level-imports = [
 "importlib.metadata".msg = "Use locjson._version; importlib.metadata is slow to import"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D", "S101", "S603", "PLR2004", "SLF001", "ARG", "FBT", "TID253"]
+"tests/**" = ["D", "S101", "S603", "PLR2004", "SLF001", "ARG", "FBT", "TID253", "RUF001"]
 "src/locjson/locale.py" = ["A005"]
 
 [tool.mypy]
