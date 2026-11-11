@@ -13,10 +13,22 @@ __all__ = ["Loader", "RawSource"]
 
 
 class RawSource:
-    """One parsed catalog document, before validation.
+    """One decoded catalog document, before validation.
+
+    A :class:`Loader` returns these from :meth:`Loader.load`. The data is
+    already decoded: a loader for another format (YAML, TOML, a database)
+    parses its own input and hands over plain Python values. Every source then
+    goes through the same validator as a JSON file, so a loader cannot bypass
+    the catalog rules.
+
+    Args:
+        data: The decoded document. A valid catalog is a mapping of string
+            keys to strings, nested mappings, plural entries or ``None``.
+        origin: Where the document came from, shown in every diagnostic.
+        namespace: Key prefix for the document, or ``None``.
 
     Attributes:
-        data: The parsed document (a JSON object for valid catalogs).
+        data: The decoded document (a JSON object for valid catalogs).
         origin: POSIX-style path relative to the catalog root, such as
             ``"en.json"`` or ``"pt-BR/common.json"``, or ``"<dict>/<tag>"`` for
             in-memory catalogs. Used in every diagnostic.
@@ -61,10 +73,46 @@ class RawSource:
 
 @runtime_checkable
 class Loader(Protocol):
-    """A source of catalog documents.
+    """A source of catalog documents: the extension point for custom storage.
 
     :class:`~locjson.Localizer` depends only on this protocol, so catalogs can
-    come from the filesystem, from memory or from any custom store.
+    come from the filesystem (:class:`~locjson.FilesystemLoader`), from memory
+    (:class:`~locjson.DictLoader`) or from any custom store. A custom loader
+    does not need to inherit from this class: any object with these two
+    methods qualifies, and ``isinstance(obj, Loader)`` checks for them.
+
+    The contract:
+
+    - :meth:`discover_locales` is cheap and returns canonical tags (see
+      :func:`~locjson.locale.normalize`). It is called when the
+      :class:`~locjson.Localizer` is created.
+    - :meth:`load` is called when a locale is first needed, and only with a
+      tag from the latest discovery. It returns decoded documents as
+      :class:`RawSource`
+      objects sorted by ``origin``. Formats other than JSON decode their
+      input here.
+    - All returned data is validated by the same rules as JSON files, and
+      problems are reported against each source's ``origin``.
+
+    Example:
+        A loader for documents kept in a tuple::
+
+            class TupleLoader:
+                def __init__(self, pairs):
+                    self.pairs = pairs
+
+                def discover_locales(self):
+                    return frozenset(tag for tag, _ in self.pairs)
+
+                def load(self, locale):
+                    return tuple(
+                        RawSource(data, f"<tuple>/{tag}")
+                        for tag, data in self.pairs
+                        if tag == locale
+                    )
+
+
+            Localizer(loader=TupleLoader((("en", {"hi": "Hello"}),)))
     """
 
     def discover_locales(self) -> frozenset[str]:

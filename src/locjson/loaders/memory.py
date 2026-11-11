@@ -20,7 +20,13 @@ class DictLoader:
 
     Each value has the same shape as one ``<tag>.json`` file and goes through
     the same validation, so ``Localizer(loader=DictLoader(data))`` behaves like
-    a directory holding the same content.
+    a directory holding the same content in the single-file layout. Use it for
+    tests, for catalogs built at runtime, or as a model for a custom
+    :class:`~locjson.Loader`.
+
+    Keys are normalized when the loader is created: ``"en_us"`` is served as
+    ``"en-US"``. Each locale yields one source whose origin is
+    ``"<dict>/<tag>"`` and which has no namespace.
 
     The mappings are read when a locale is first loaded, not copied here:
     do not mutate them after creating the loader.

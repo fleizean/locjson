@@ -21,25 +21,46 @@ __all__ = ["FilesystemLoader"]
 
 _SUFFIX = ".json"
 
+_Kind = Literal["file", "dir"]
+
 
 class _Entry:
     """One discovered locale: a ``<tag>.json`` file or a ``<tag>/`` directory."""
 
     __slots__ = ("kind", "path")
 
-    def __init__(self, kind: Literal["file", "dir"], path: Path) -> None:
-        self.kind: Literal["file", "dir"] = kind
+    def __init__(self, kind: _Kind, path: Path) -> None:
+        self.kind: _Kind = kind
         self.path = path
 
 
 class FilesystemLoader:
-    """Read locale catalogs from the top level of one directory.
+    """Read locale catalogs from one directory, in either of two layouts.
 
-    Two layouts are detected per locale:
+    The layout is detected per locale from the top level of ``path``:
 
-    - single file: ``<root>/<tag>.json`` holds every key of the locale;
-    - namespaced: ``<root>/<tag>/<ns>.json`` files each hold the keys of one
-      namespace, which become ``<ns>.<key>``.
+    - **single file:** ``<path>/<tag>.json`` holds every key of the locale.
+    - **namespaced:** each ``<path>/<tag>/<ns>.json`` holds the keys of one
+      namespace, which are read as ``<ns>.<key>`` (``tr/common.json`` with
+      ``greeting`` serves ``common.greeting``).
+
+    Discovery rules:
+
+    - Only the top level of ``path`` is listed. Names starting with ``.`` are
+      ignored, and so are files that do not end in ``.json``. The suffix match
+      is exact and case-sensitive, so ``en.JSON`` is ignored too.
+    - Every other ``.json`` file and every directory must be named after a
+      valid locale tag (``_`` is accepted as a separator). ``common.json``,
+      ``root/`` or ``en.UTF-8.json`` raise instead of being skipped.
+    - Two entries for one locale raise and name both entries: ``en.json``
+      together with ``en/`` (both layouts), or ``pt_BR.json`` together with
+      ``pt-BR.json``.
+    - Namespaces are one level deep: inside a locale directory, dot entries
+      and non-``.json`` files are ignored, a subdirectory raises, and a
+      namespace stem must not contain ``.`` or start with ``$``. A locale
+      directory with no namespace files is an empty catalog.
+    - Entries are visited in sorted order, so errors are the same on every
+      operating system. Symbolic links are followed.
 
     Discovery only lists the directory. Files are read when a locale is first
     loaded, and only entries found by the latest discovery are ever opened: a
@@ -67,18 +88,23 @@ class FilesystemLoader:
     def discover_locales(self) -> frozenset[str]:
         """List the locales found at the top level of the catalog directory.
 
-        Dotfiles and non-``.json`` files are ignored.
+        Each call rescans the directory and replaces the previous result, so
+        a later :meth:`load` sees locales added or removed since.
 
         Returns:
             Canonical locale tags.
 
         Raises:
-            ConfigurationError: If the catalog directory does not exist.
-            InvalidCatalogError: If a ``.json`` file name is not a valid locale
-                tag, or two entries normalize to the same locale.
+            ConfigurationError: If the catalog directory does not exist or is
+                not a directory.
+            InvalidCatalogError: If an entry is not named after a valid locale
+                tag, or two entries are the same locale.
         """
-        if not self._root.is_dir():
+        if not self._root.exists():
             msg = f"catalog directory does not exist: {self._root}"
+            raise ConfigurationError(msg)
+        if not self._root.is_dir():
+            msg = f"catalog path is not a directory: {self._root}"
             raise ConfigurationError(msg)
         self._entries = self._scan_root()
         return frozenset(self._entries)
@@ -90,11 +116,13 @@ class FilesystemLoader:
             locale: A canonical tag returned by :meth:`discover_locales`.
 
         Returns:
-            The parsed documents, sorted by origin.
+            The parsed documents, sorted by origin. A namespaced locale yields
+            one source per ``<ns>.json`` file with ``namespace=<ns>``.
 
         Raises:
             LocJsonError: If ``locale`` was not discovered.
-            InvalidCatalogError: If a file is not UTF-8 or not valid JSON.
+            InvalidCatalogError: If a file is not UTF-8 or not valid JSON, or
+                a locale directory breaks a namespace rule.
         """
         entry = self._entries.get(locale)
         if entry is None:
@@ -109,60 +137,77 @@ class FilesystemLoader:
             RawSource(
                 read_json(path.read_bytes(), origin=origin), origin, namespace=stem
             )
-            for origin, stem, path in self._scan_namespaces(entry.path)
+            for origin, stem, path in self._scan_namespaces(locale, entry.path)
         ]
         return tuple(sorted(sources, key=lambda source: source.origin))
 
     def _scan_root(self) -> dict[str, _Entry]:
+        """Map each locale tag to its entry at the top level of the root."""
         found: dict[str, _Entry] = {}
-        names: dict[str, str] = {}
-        with os.scandir(self._root) as scan:
-            items = sorted(scan, key=lambda item: item.name)
-        for item in items:
+        shown: dict[str, str] = {}
+        for item in _sorted_scan(self._root):
             name = item.name
             if name.startswith("."):
                 continue
+            kind: _Kind
             if item.is_dir():
-                kind: Literal["file", "dir"] = "dir"
-                stem = name
-                shown = name + "/"
+                kind, stem, label = "dir", name, name + "/"
             elif item.is_file() and name.endswith(_SUFFIX):
-                kind = "file"
-                stem = name[: -len(_SUFFIX)]
-                shown = name
+                kind, stem, label = "file", name[: -len(_SUFFIX)], name
             else:
                 continue
             tag = _tag_of(stem)
             if tag is None:
-                if kind == "dir":
-                    continue
                 raise InvalidCatalogError(
-                    "file name is not a valid locale tag", path=name
+                    f"'{label}' is not named after a valid locale tag", path=label
                 )
-            if tag in found:
+            previous = found.get(tag)
+            if previous is not None:
+                if previous.kind == kind:
+                    problem = (
+                        f"'{label}' and '{shown[tag]}' are the same locale '{tag}'"
+                    )
+                else:
+                    problem = f"locale '{tag}' is present in both layouts"
                 raise InvalidCatalogError(
-                    f"file name collides with another file for locale {tag!r}",
-                    path=shown,
-                    locale=tag,
-                    other_path=names[tag],
+                    problem, path=label, locale=tag, other_path=shown[tag]
                 )
             found[tag] = _Entry(kind, Path(item.path))
-            names[tag] = shown
+            shown[tag] = label
         return found
 
-    def _scan_namespaces(self, directory: Path) -> list[tuple[str, str, Path]]:
+    @staticmethod
+    def _scan_namespaces(tag: str, directory: Path) -> list[tuple[str, str, Path]]:
+        """List ``(origin, namespace, path)`` for the namespace files of a locale."""
         found: list[tuple[str, str, Path]] = []
-        with os.scandir(directory) as scan:
-            items = sorted(scan, key=lambda item: item.name)
-        for item in items:
+        for item in _sorted_scan(directory):
             name = item.name
-            if name.startswith(".") or not name.endswith(_SUFFIX):
-                continue
-            if not item.is_file():
+            if name.startswith("."):
                 continue
             origin = f"{directory.name}/{name}"
-            found.append((origin, name[: -len(_SUFFIX)], Path(item.path)))
+            if item.is_dir():
+                raise InvalidCatalogError(
+                    f"namespaces are one level deep; '{origin}/' is a directory",
+                    path=origin + "/",
+                    locale=tag,
+                )
+            if not (item.is_file() and name.endswith(_SUFFIX)):
+                continue
+            stem = name[: -len(_SUFFIX)]
+            if "." in stem or stem.startswith("$"):
+                raise InvalidCatalogError(
+                    f"namespace '{stem}' must not contain '.' or start with '$'",
+                    path=origin,
+                    locale=tag,
+                )
+            found.append((origin, stem, Path(item.path)))
         return found
+
+
+def _sorted_scan(directory: Path) -> list[os.DirEntry[str]]:
+    """List a directory once, sorted by name for deterministic errors."""
+    with os.scandir(directory) as scan:
+        return sorted(scan, key=lambda item: item.name)
 
 
 def _tag_of(stem: str) -> str | None:
