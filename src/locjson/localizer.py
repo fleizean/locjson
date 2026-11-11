@@ -31,7 +31,7 @@ from locjson.translator import Translator
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from decimal import Decimal
-    from typing import NamedTuple
+    from typing import NamedTuple, SupportsIndex
 
     from locjson.catalog import Catalog, Entry
     from locjson.loaders.base import Loader
@@ -56,6 +56,7 @@ the result of ``policy(key, locale)``."""
 _MISSING_POLICIES = frozenset({"key", "empty", "raise"})
 _CHAIN_CACHE_MAX = 256
 _TAG_LOG_LIMIT = 64
+_UNREADABLE_COUNT = "count could not be read as a number"
 _STRICT_ENV = "LOCJSON_STRICT"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"", "0", "false", "no", "off"})
@@ -386,7 +387,7 @@ class Localizer:
         /,
         *,
         locale: str | None = None,
-        count: int | float | Decimal | None = None,
+        count: int | float | Decimal | SupportsIndex | None = None,
         context: None = None,
         **variables: object,
     ) -> str:
@@ -399,17 +400,19 @@ class Localizer:
                 :attr:`current_locale`. An invalid tag falls back to the
                 default locale.
             count: The quantity for plural messages: an ``int``, ``float`` or
-                ``Decimal``. The form follows the CLDR plural rule of the
-                catalog that holds the message, and a ``zero`` form wins for
-                any count equal to 0. ``Decimal`` counts keep their visible
-                fraction digits (``Decimal("1.0")`` is ``other`` in English,
-                ``one`` in Turkish); a float is read through its shortest
-                ``repr``. ``count`` is also available to templates as
+                ``Decimal``, or another integer type with ``__index__``, such
+                as NumPy's ``np.int64``. The form follows the CLDR plural rule
+                of the catalog that holds the message, and a ``zero`` form
+                wins for any count equal to 0. ``Decimal`` counts keep their
+                visible fraction digits (``Decimal("1.0")`` is ``other`` in
+                English, ``one`` in Turkish); a float, including a subclass
+                such as ``np.float64``, is read through the shortest ``repr``
+                of its value. ``count`` is also available to templates as
                 ``{count}``. A plural message without ``count`` uses its
                 ``other`` form. An invalid count (a ``bool``, a string, NaN,
-                an infinity, any other type, or more than 1000 integer or
-                fraction digits) is a slip: the ``other`` form is used and
-                ``{count}`` stays literal.
+                an infinity, any other type, such as ``Fraction``, or more
+                than 1000 integer or fraction digits) is a slip: the
+                ``other`` form is used and ``{count}`` stays literal.
             context: Reserved for a future version; must be ``None``.
             **variables: Placeholder values. A placeholder without a value is
                 kept as literal ``{name}`` text.
@@ -442,6 +445,13 @@ class Localizer:
             except (TypeError, ValueError) as error:
                 # The message names the type or problem, never the value.
                 return self._invalid_count(entry, key, tag, variables, str(error))
+            except ArithmeticError:
+                # Defense in depth: plural_operands never runs a count's own
+                # arithmetic, but a failure must still be a slip. Its text
+                # might show the value, so it is not used.
+                return self._invalid_count(
+                    entry, key, tag, variables, _UNREADABLE_COUNT
+                )
             variables["count"] = count
             if isinstance(entry, PluralEntry):
                 # The rule follows the catalog that supplied the entry.
@@ -555,14 +565,19 @@ class Localizer:
         if self._raises:
             msg = f"invalid count for key {key!r}: {reason}"
             raise InterpolationError(key, "count", msg)
+        # Only a plural entry has an 'other' form; a plain one is rendered
+        # as is, with {count} left literal.
+        plural = isinstance(entry, PluralEntry)
+        outcome = "using 'other'" if plural else "{count} left literal"
         self._slips.report(
             "invalid count",
             tag,
             key,
-            "locjson: invalid count for key %r in %r (%s); using 'other'",
+            "locjson: invalid count for key %r in %r (%s); %s",
             key,
             tag,
             reason,
+            outcome,
         )
         return self._render_without_count(entry, key, tag, variables)
 

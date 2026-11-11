@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import collections
 import math
+import operator
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, cast
 
 if TYPE_CHECKING:
-    from typing import NamedTuple
+    from typing import NamedTuple, SupportsIndex
 
     class _OperandFields(NamedTuple):
         n: int | Decimal
@@ -72,42 +73,67 @@ def plural_operands(count: object) -> Operands:
     it was written with, so ``Decimal("1.50")`` has ``v = 2``, ``f = 50`` and
     ``t = 5``. A ``float`` is read through its shortest ``repr``: an integral
     float acts as the int, so ``1.0`` has ``v = 0``, and ``1.5`` has ``v = 1``.
-    Negative counts use their absolute value.
+    A subclass (NumPy's ``np.float64`` is one) is read through the ``float``
+    value it holds; its own ``repr`` and arithmetic are never used. Another
+    integer type, one that implements ``__index__`` such as NumPy's
+    ``np.int64``, acts as the int :func:`operator.index` returns. Other
+    numbers, such as a ``Fraction``, are not counts. Negative counts use
+    their absolute value.
 
     Error messages name the type or the problem, never the value, because a
     count may come from request input.
 
     Args:
         count: The quantity: an ``int`` (not a ``bool``), ``float`` or
-            ``Decimal``, or an instance of a subclass of one of them.
+            ``Decimal``, an instance of a subclass of one of them, or an
+            integer type with ``__index__``.
 
     Returns:
         The operands.
 
     Raises:
-        TypeError: If ``count`` is a ``bool`` or not an ``int``, ``float`` or
-            ``Decimal``.
+        TypeError: If ``count`` is a ``bool``, or is not an ``int``,
+            ``float``, ``Decimal`` or integer type, or its ``__index__``
+            fails.
         ValueError: If ``count`` is NaN or infinite, or has more than
             :data:`MAX_COUNT_DIGITS` integer or fraction digits.
     """
-    if isinstance(count, bool) or not isinstance(count, int | float | Decimal):
-        msg = f"count must be an int, float or Decimal, not {type(count).__name__}"
-        raise TypeError(msg)
-    if isinstance(count, int):
-        n = abs(int(count))
-        if n >= _INT_LIMIT:
-            raise ValueError(_TOO_MANY_DIGITS)
-        return Operands(n, n, 0, 0, 0, 0)
+    if isinstance(count, bool):
+        raise _type_error(count)
+    # The built-in methods are called unbound, so a subclass's own overrides
+    # (NumPy's np.float64 has its own __abs__ and __repr__) never run here.
     if isinstance(count, float):
-        if not math.isfinite(count):
+        value = abs(float.__float__(count))  # an exact float
+        if not math.isfinite(value):
             raise ValueError(_NOT_FINITE)
-        if count.is_integer():  # at most 309 digits
-            n = int(abs(count))
+        if value.is_integer():  # at most 309 digits
+            n = int(value)
             return Operands(n, n, 0, 0, 0, 0)
-        # repr is the shortest text that round-trips, so 1.5 reads as "1.5".
-        return _decimal_operands(Decimal(repr(abs(count))))
-    # copy_abs, not abs(): abs() rounds to the context precision.
-    return _decimal_operands(count.copy_abs())
+        # The shortest text that round-trips, so 1.5 reads as "1.5". repr() of
+        # a subclass may not be a number at all ("np.float64(1.5)").
+        return _decimal_operands(Decimal(float.__repr__(value)))
+    if isinstance(count, Decimal):
+        # copy_abs, not abs(): abs() rounds to the context precision.
+        return _decimal_operands(Decimal.copy_abs(count))
+    try:
+        # An exact int: an int (subclass) is copied without running any of
+        # its methods; another integer type, such as NumPy's np.int64, is
+        # read through its __index__.
+        integer = operator.index(cast("SupportsIndex", count))
+    except (TypeError, ValueError, ArithmeticError):
+        # Not an integer, or its __index__ failed. That error's text might
+        # show the value, so it is dropped.
+        raise _type_error(count) from None
+    n = abs(integer)
+    if n >= _INT_LIMIT:
+        raise ValueError(_TOO_MANY_DIGITS)
+    return Operands(n, n, 0, 0, 0, 0)
+
+
+def _type_error(count: object) -> TypeError:
+    # The type's name only, never the value.
+    name = type(count).__name__
+    return TypeError(f"count must be an int, float or Decimal, not {name}")
 
 
 def _decimal_operands(n: Decimal) -> Operands:

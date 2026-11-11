@@ -14,13 +14,20 @@ catalog.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import decimal
+from typing import TYPE_CHECKING, Final
+
+from locjson.plural.operands import MAX_COUNT_DIGITS
 
 if TYPE_CHECKING:
     from locjson.plural.operands import Operands
     from locjson.plural.rules import RuleSpec
 
 __all__ = ["babel_rule"]
+
+# Enough precision for any count plural_operands accepts (at most
+# MAX_COUNT_DIGITS integer and fraction digits each), with no traps.
+_EXACT: Final = decimal.Context(prec=2 * MAX_COUNT_DIGITS + 2, traps=[])
 
 
 def babel_rule(tag: str) -> RuleSpec | None:
@@ -49,6 +56,13 @@ def babel_rule(tag: str) -> RuleSpec | None:
         return None
 
     def rule(operands: Operands) -> str:
-        return plural(operands.n)
+        if operands.v == 0:
+            # A whole count, as a plain int: exact, with no decimal context.
+            return plural(operands.i)
+        # Babel starts with abs(n), which rounds a Decimal to the current
+        # context and may trap. Its own exact, non-trapping context keeps
+        # every digit and never raises out of t().
+        with decimal.localcontext(_EXACT):
+            return plural(operands.n)
 
     return rule, frozenset(plural.tags) | {"other"}

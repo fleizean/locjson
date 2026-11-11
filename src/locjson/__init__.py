@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from contextlib import AbstractContextManager
     from decimal import Decimal
+    from typing import SupportsIndex
 
     from locjson.localizer import MissingPolicy
 
@@ -152,7 +153,7 @@ def t(
     /,
     *,
     locale: str | None = None,
-    count: int | float | Decimal | None = None,
+    count: int | float | Decimal | SupportsIndex | None = None,
     context: None = None,
     **variables: object,
 ) -> str:
@@ -175,7 +176,8 @@ def t(
         MissingTranslationError: If the key is missing and slips raise.
         InterpolationError: If a value or ``count`` is missing, or ``count``
             is invalid (a ``bool``, a string, NaN, an infinity or any other
-            non-number), and slips raise.
+            type that is not an int, float, Decimal or integer type with
+            ``__index__``), and slips raise.
         InvalidCatalogError: If a catalog needed for the lookup is invalid.
     """
     return get_localizer().t(

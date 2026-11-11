@@ -2,12 +2,73 @@
 
 from __future__ import annotations
 
+import decimal
 from decimal import Decimal
 from fractions import Fraction
 
 import pytest
 
+from locjson._compat import override
 from locjson.plural.operands import MAX_COUNT_DIGITS, Operands, plural_operands
+
+
+class NumpyLikeFloat(float):
+    """Behaves like NumPy 2's ``np.float64``, a ``float`` subclass.
+
+    ``abs()`` keeps the type, and ``repr()`` is not a plain number.
+    """
+
+    @override
+    def __abs__(self) -> NumpyLikeFloat:
+        return NumpyLikeFloat(float.__abs__(self))
+
+    @override
+    def __repr__(self) -> str:
+        return f"np.float64({float.__repr__(self)})"
+
+    @override
+    def __str__(self) -> str:
+        return float.__repr__(self)
+
+
+class BrokenFloat(float):
+    """A float subclass whose own arithmetic always fails."""
+
+    @override
+    def __float__(self) -> float:
+        raise OverflowError
+
+    @override
+    def __abs__(self) -> float:
+        raise OverflowError
+
+    @override
+    def is_integer(self) -> bool:
+        raise OverflowError
+
+
+class BrokenInt(int):
+    """An int subclass whose own conversions always fail."""
+
+    @override
+    def __int__(self) -> int:
+        raise OverflowError
+
+    @override
+    def __abs__(self) -> int:
+        raise OverflowError
+
+
+class BrokenDecimal(Decimal):
+    """A Decimal subclass whose own methods always fail."""
+
+    @override
+    def copy_abs(self) -> Decimal:
+        raise decimal.InvalidOperation
+
+    @override
+    def __abs__(self) -> Decimal:
+        raise decimal.InvalidOperation
 
 
 @pytest.mark.parametrize(
@@ -78,6 +139,77 @@ def test_int_subclasses_are_counts() -> None:
 
     assert plural_operands(Count(-3)) == (3, 3, 0, 0, 0, 0)
     assert type(plural_operands(Count(3)).n) is int
+
+
+class IndexCount:
+    """An integer type that is not an ``int``, like NumPy's ``np.int64``."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+
+class BrokenIndex:
+    """An integer type whose ``__index__`` fails."""
+
+    __slots__ = ("error",)
+
+    def __init__(self, error: type[Exception]) -> None:
+        self.error = error
+
+    def __index__(self) -> int:
+        raise self.error("SECRET-VALUE")
+
+
+def test_integer_types_with_index_are_counts() -> None:
+    # IN-03: np.int64 and friends are integers, read through operator.index().
+    assert plural_operands(IndexCount(-3)) == (3, 3, 0, 0, 0, 0)
+    assert type(plural_operands(IndexCount(3)).n) is int
+    assert plural_operands(IndexCount(10**999)).i == 10**999
+
+
+def test_integer_types_obey_the_digit_cap() -> None:
+    with pytest.raises(ValueError, match=f"more than {MAX_COUNT_DIGITS} digits"):
+        plural_operands(IndexCount(10**MAX_COUNT_DIGITS))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [TypeError, ValueError, OverflowError],
+    ids=["TypeError", "ValueError", "OverflowError"],
+)
+def test_failing_index_is_a_type_error_without_the_value(
+    error: type[Exception],
+) -> None:
+    with pytest.raises(TypeError, match="not BrokenIndex") as info:
+        plural_operands(BrokenIndex(error))
+    assert "SECRET" not in str(info.value)
+    assert info.value.__cause__ is None
+    assert info.value.__suppress_context__
+
+
+def test_float_subclasses_use_the_shortest_repr_of_their_value() -> None:
+    # NumPy 2: repr(np.float64(1.5)) == "np.float64(1.5)" (CR-01).
+    assert plural_operands(NumpyLikeFloat(-1.5)) == (Decimal("1.5"), 1, 1, 1, 5, 5)
+    assert plural_operands(NumpyLikeFloat(0.25)) == (Decimal("0.25"), 0, 2, 2, 25, 25)
+    assert plural_operands(NumpyLikeFloat(-2.0)) == (2, 2, 0, 0, 0, 0)
+    assert type(plural_operands(NumpyLikeFloat(1.5)).n) is Decimal
+
+
+def test_numeric_subclass_overrides_are_never_called() -> None:
+    # Operands come from the built-in value, so a subclass's own (here
+    # failing) arithmetic can never raise out of plural_operands.
+    assert plural_operands(BrokenFloat(-1.5)) == (Decimal("1.5"), 1, 1, 1, 5, 5)
+    assert plural_operands(BrokenFloat(3.0)) == (3, 3, 0, 0, 0, 0)
+    assert plural_operands(BrokenInt(-4)) == (4, 4, 0, 0, 0, 0)
+    assert type(plural_operands(BrokenInt(4)).n) is int
+    operands = plural_operands(BrokenDecimal("-2.50"))
+    assert type(operands.n) is Decimal
+    assert tuple(operands) == (Decimal("2.50"), 2, 2, 1, 50, 5)
 
 
 @pytest.mark.parametrize(

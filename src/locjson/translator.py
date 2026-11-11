@@ -9,6 +9,7 @@ from locjson.errors import ConfigurationError
 
 if TYPE_CHECKING:
     from decimal import Decimal
+    from typing import SupportsIndex
 
     from locjson.localizer import Localizer
 
@@ -102,7 +103,7 @@ class Translator:
         /,
         *,
         locale: str | None = None,
-        count: int | float | Decimal | None = None,
+        count: int | float | Decimal | SupportsIndex | None = None,
         context: None = None,
         **variables: object,
     ) -> str:

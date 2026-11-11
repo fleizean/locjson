@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -13,11 +14,15 @@ import pytest
 import locjson
 from locjson import DictLoader, Localizer
 from locjson.plural.operands import plural_operands
-from locjson.plural.resolver import rule_for
+from locjson.plural.resolver import _lookup, rule_for
 from locjson.plural.rules import BUILTIN_RULES, CLDR_VERSION, FALLBACK_RULE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from locjson.plural.rules import RuleSpec
+
+resolver_module = importlib.import_module("locjson.plural.resolver")
 
 FIXTURE_PATH = Path(__file__).parent / "data" / "cldr49_plural_samples.json"
 FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
@@ -181,6 +186,13 @@ def test_zero_without_a_zero_form_follows_the_rule() -> None:
         ("en-IN", "en"),
         ("en-001", "en"),
         ("tr-CY", "tr"),
+        # The likely (or only) script spelled out (WR-02).
+        ("pt-Latn-PT", "pt-PT"),
+        ("pt-Latn-AO", "pt-PT"),
+        ("pt-Latn-PT-1990", "pt-PT"),
+        ("pt-Latn-BR", "pt"),
+        ("pt-Latn", "pt"),
+        ("zh-Hans-CN", "zh"),
         # A language neither the built-in table nor Babel knows (sr would get
         # Babel's rule where the extra is installed).
         ("xx-Latn", "xx"),
@@ -188,6 +200,50 @@ def test_zero_without_a_zero_form_follows_the_rule() -> None:
 )
 def test_lookup_chain(tag: str, rule_tag: str) -> None:
     assert rule_for(tag) is rule_for(rule_tag)
+
+
+@pytest.mark.parametrize("tag", ["pt-Latn-PT", "pt-Latn-AO"])
+def test_pt_pt_with_the_latin_script_spelled_out(tag: str) -> None:
+    forms = {"one": "one", "many": "many", "other": "other"}
+    l10n = _l10n({"pt": {"x": forms}, tag: {"x": forms}}, "pt")
+    assert l10n.t("x", locale=tag, count=0) == "other"
+    assert l10n.t("x", locale=tag, count=1.5) == "other"
+    assert l10n.t("x", locale=tag, count=1) == "one"
+    assert locjson.categories_for(tag) == locjson.categories_for("pt-PT")
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        # The tag without its likely script comes right after each tag.
+        ("sr-Cyrl-RS", ["sr-Cyrl-RS", "sr-RS", "sr-Cyrl", "sr"]),
+        # cy has a single script, so any script subtag may be dropped.
+        (
+            "cy-Latn-GB-1990",
+            ["cy-Latn-GB-1990", "cy-GB-1990", "cy-Latn-GB", "cy-GB", "cy-Latn", "cy"],
+        ),
+        # Another script is never dropped: sr-RS is written in Cyrillic.
+        ("sr-Latn-RS", ["sr-Latn-RS", "sr-Latn", "sr"]),
+        ("yue-Hans-CN", ["yue-Hans-CN", "yue-Hans", "yue"]),
+        ("cy-GB", ["cy-GB", "cy"]),
+    ],
+)
+def test_lookup_candidates_in_order(
+    monkeypatch: pytest.MonkeyPatch, tag: str, expected: list[str]
+) -> None:
+    calls: list[str] = []
+
+    def recording(candidate: str) -> RuleSpec | None:
+        calls.append(candidate)
+        return None
+
+    monkeypatch.setattr(resolver_module, "babel_rule", recording)
+    _lookup.cache_clear()
+    try:
+        rule_for(tag)
+    finally:
+        _lookup.cache_clear()
+    assert calls == expected
 
 
 # --- PLUR-01 edges ------------------------------------------------------------

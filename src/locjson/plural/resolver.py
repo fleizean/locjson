@@ -4,8 +4,10 @@ The plural rule of a catalog is found in three steps:
 
 1. The built-in CLDR 49 rules, tried for the exact canonical tag, then for
    the tag's script-aware parents (:func:`locjson.locale.parents`), then for
-   its language subtag. Built-in languages always use these rules, whether
-   or not Babel is installed.
+   its language subtag. A tag that spells out the language's likely script
+   is also tried without it, right after itself, so ``pt-Latn-PT`` finds the
+   ``pt-PT`` rule. Built-in languages always use these rules, whether or not
+   Babel is installed.
 2. Babel's CLDR rules, when ``locjson[babel]`` is installed, tried for the
    same candidates in the same order. The first one Babel knows wins.
 3. Otherwise the one/other rule (``one`` iff ``i = 1 and v = 0``).
@@ -19,11 +21,13 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING
 
-from locjson.locale import normalize, parents
+from locjson.locale import _without_likely_script, normalize, parents
 from locjson.plural._babel import babel_rule
 from locjson.plural.rules import BUILTIN_RULES, FALLBACK_RULE
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from locjson.formatting import Template
     from locjson.plural.categories import PluralEntry
     from locjson.plural.operands import Operands
@@ -78,10 +82,20 @@ def rule_for(tag: str) -> PluralRule:
     return _lookup(tag)[0]
 
 
+def _candidates(tag: str) -> Iterator[str]:
+    # Each tag is followed by its spelling without an implied script, so
+    # pt-Latn-PT finds the pt-PT rule before falling back to pt.
+    for candidate in (tag, *parents(tag)):
+        yield candidate
+        bare = _without_likely_script(candidate)
+        if bare is not None:
+            yield bare
+    yield tag.partition("-")[0]
+
+
 @functools.lru_cache(maxsize=256)
 def _lookup(tag: str) -> RuleSpec:
-    language = tag.partition("-")[0]
-    candidates = tuple(dict.fromkeys((tag, *parents(tag), language)))
+    candidates = tuple(dict.fromkeys(_candidates(tag)))
     for candidate in candidates:
         spec = BUILTIN_RULES.get(candidate)
         if spec is not None:

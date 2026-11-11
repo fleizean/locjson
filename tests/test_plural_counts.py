@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import decimal
 import logging
 from decimal import Decimal
 from fractions import Fraction
@@ -10,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 import locjson
+import locjson.localizer
 from locjson import (
     DictLoader,
     InterpolationError,
@@ -17,13 +19,31 @@ from locjson import (
     LocJsonError,
     MissingTranslationError,
 )
+from locjson._compat import override
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
     from locjson.localizer import MissingPolicy
+    from locjson.plural.operands import Operands
 
 _X = {"x": {"one": "one {count}", "other": "other {count}"}}
+
+
+class NumpyLikeFloat(float):
+    """Behaves like NumPy 2's ``np.float64``: ``repr()`` is not a plain number."""
+
+    @override
+    def __abs__(self) -> NumpyLikeFloat:
+        return NumpyLikeFloat(float.__abs__(self))
+
+    @override
+    def __repr__(self) -> str:
+        return f"np.float64({float.__repr__(self)})"
+
+    @override
+    def __str__(self) -> str:
+        return float.__repr__(self)
 
 
 def _l10n(
@@ -78,6 +98,44 @@ def test_zero_override_for_negative_and_decimal_zeros() -> None:
     l10n = _l10n({"en": {"x": {"zero": "none", "other": "{count}"}}})
     for count in (-0.0, 0.0, Decimal("-0.00"), Decimal("0E+3")):
         assert l10n.t("x", count=count) == "none"
+
+
+def test_numpy_like_float_counts_pick_the_cldr_form() -> None:
+    # CR-01: a non-integral np.float64 made t() raise decimal.InvalidOperation.
+    l10n = _l10n({"en": _X, "fr": {"x": {"one": "un {count}", "other": "autre"}}})
+    assert l10n.t("x", locale="fr", count=NumpyLikeFloat(1.5)) == "un 1.5"
+    assert l10n.t("x", count=NumpyLikeFloat(-1.5)) == "other -1.5"
+    assert l10n.t("x", count=NumpyLikeFloat(1.0)) == "one 1.0"
+    strict = _l10n(strict=True)
+    assert strict.t("x", count=NumpyLikeFloat(2.5)) == "other 2.5"
+
+
+class IndexCount:
+    """An integer type that is not an ``int``, like NumPy's ``np.int64``."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+    @override
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+def test_integer_types_with_index_are_counts() -> None:
+    # IN-03: np.int64 is not an int subclass, but it is an integer.
+    ru = {"one": "{count} one", "few": "{count} few", "many": "{count} many"}
+    l10n = _l10n({"en": _X, "ru": {"x": {**ru, "other": "other"}}})
+    assert l10n.t("x", count=IndexCount(1)) == "one 1"
+    assert l10n.t("x", count=IndexCount(-7)) == "other -7"
+    assert l10n.t("x", locale="ru", count=IndexCount(2)) == "2 few"
+    assert l10n.t("x", locale="ru", count=IndexCount(5)) == "5 many"
+    assert l10n.t("x", locale="ru", count=IndexCount(21)) == "21 one"
+    assert _l10n(strict=True).t("x", count=IndexCount(2)) == "other 2"
 
 
 def test_counts_at_the_digit_cap_render() -> None:
@@ -150,7 +208,49 @@ def test_invalid_count_on_a_plain_entry(caplog: pytest.LogCaptureFixture) -> Non
     messages = [record.getMessage() for record in _records(caplog)]
     assert len(messages) == 1
     assert "invalid count" in messages[0]
+    # IN-04: a plain entry has no 'other' form to use.
+    assert "other" not in messages[0]
+    assert messages[0].endswith("; {count} left literal")
     assert not any("missing variable" in message for message in messages)
+
+
+def test_invalid_count_on_a_plural_entry_says_other_is_used(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        assert _l10n().t("x", count="3") == "other {count}"  # type: ignore[arg-type]
+    messages = [record.getMessage() for record in _records(caplog)]
+    assert len(messages) == 1
+    assert messages[0].endswith("; using 'other'")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [decimal.InvalidOperation, OverflowError, ZeroDivisionError],
+    ids=["InvalidOperation", "OverflowError", "ZeroDivisionError"],
+)
+def test_arithmetic_errors_from_operands_are_invalid_count_slips(
+    error: type[ArithmeticError],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Defense in depth (CR-01): whatever a numeric type does, an
+    # ArithmeticError never escapes t(), and its text is never shown.
+    def broken(count: object) -> Operands:
+        raise error("SECRET-VALUE")
+
+    monkeypatch.setattr(locjson.localizer, "plural_operands", broken)
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        assert _l10n().t("x", count=2) == "other {count}"
+    records = _records(caplog)
+    assert [record.levelname for record in records] == ["WARNING"]
+    assert "invalid count" in records[0].getMessage()
+    assert "SECRET" not in records[0].getMessage()
+    for l10n in (_l10n(strict=True), _l10n(missing="raise")):
+        with pytest.raises(InterpolationError) as info:
+            l10n.t("x", count=2)
+        assert info.value.name == "count"
+        assert "SECRET" not in str(info.value)
 
 
 def test_invalid_count_still_reports_other_missing_names(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import decimal
 import importlib
 import json
 import subprocess
@@ -96,6 +97,47 @@ def test_latvian_zero_covers_ten_through_babel() -> None:
     pytest.importorskip("babel")
     assert rule_for("lv")(plural_operands(10)) == "zero"
     assert rule_for("lv")(plural_operands(1)) == "one"
+
+
+# Serbian (sr) has no built-in rule. Its one/few look at the last digits of i,
+# or of f, which a Decimal rounded to the default 28 digits loses (WR-01).
+SERBIAN = {"x": {"one": "one {count}", "few": "few {count}", "other": "other"}}
+LONG_COUNTS = (
+    (Decimal(1234567890123456789012345678901), "one"),
+    (Decimal(1234567890123456789012345678902), "few"),
+    (Decimal("1234567890123456789012345678905.1"), "one"),
+    (Decimal("1234567890123456789012345678905.22"), "few"),
+    (Decimal(1234567890123456789012345678905), "other"),
+)
+
+
+def test_long_decimals_reach_babel_unrounded() -> None:
+    pytest.importorskip("babel")
+    rule = rule_for("sr")
+    assert [rule(plural_operands(count)) for count, _ in LONG_COUNTS] == [
+        category for _, category in LONG_COUNTS
+    ]
+    l10n = _l10n({"sr": SERBIAN})
+    count = LONG_COUNTS[0][0]
+    assert l10n.t("x", locale="sr", count=count) == f"one {count}"
+
+
+@pytest.mark.parametrize(
+    "trap", [decimal.Inexact, decimal.Rounded], ids=["Inexact", "Rounded"]
+)
+def test_a_trapping_decimal_context_never_reaches_babel(
+    trap: type[decimal.DecimalException],
+) -> None:
+    pytest.importorskip("babel")
+    l10n = _l10n({"sr": SERBIAN})
+    l10n.t("x", locale="sr", count=1)  # Babel's rule is compiled outside
+    with decimal.localcontext(decimal.Context(traps=[trap])) as caller:
+        forms = [l10n.t("x", locale="sr", count=count) for count, _ in LONG_COUNTS]
+        assert decimal.getcontext() is caller
+        assert not caller.flags[trap]
+    assert [form.partition(" ")[0] for form in forms] == [
+        category for _, category in LONG_COUNTS
+    ]
 
 
 def test_locale_babel_does_not_know_uses_one_other() -> None:
