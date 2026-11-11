@@ -25,7 +25,7 @@
 
 ---
 
-> **🚧 Status: early development, not yet released.** locjson is not on PyPI yet. The core runtime (0.1.0) is being built right now, so the API below is the planned 0.1 surface and may still change before the first release. Features marked *planned* do not exist yet.
+> **🚧 Status: 0.1.0 release in progress.** The core runtime is complete and the first release, 0.1.0, is being prepared. Until it appears on PyPI, `pip install locjson` will not find it; install from GitHub instead (see [Installation](#installation)). Features marked *planned* do not exist yet.
 
 ## Why locjson?
 
@@ -43,15 +43,15 @@ locjson keeps translations in **plain JSON** on the backend too, and focuses on 
 
 | Feature | Status |
 |---|---|
-| JSON catalogs, single-file or namespaced layout (auto-detected) | 0.1, in progress |
-| Nested keys flattened to dot keys (`nav.home`) | 0.1, in progress |
-| BCP 47 locale normalization (`pt_BR` → `pt-BR`) and script-aware fallback chains | 0.1, in progress |
-| Safe `{name}` interpolation with `{{` / `}}` escapes | 0.1, in progress |
-| Plural entries with explicit `zero` and a one/other rule | 0.1, in progress |
-| Current locale via `contextvars` (`use()` / `set_locale()`), safe across asyncio tasks and threads | 0.1, in progress |
-| `missing` policy, `LocJsonError` hierarchy with file path + JSON pointer | 0.1, in progress |
-| `reload()`, `negotiate()` (Accept-Language), `direction()` (LTR/RTL) | 0.1, in progress |
-| Custom loaders via a `Loader` protocol, in-memory `DictLoader` | 0.1, in progress |
+| JSON catalogs, single-file or namespaced layout (auto-detected) | 0.1 |
+| Nested keys flattened to dot keys (`nav.home`) | 0.1 |
+| BCP 47 locale normalization (`pt_BR` → `pt-BR`) and script-aware fallback chains | 0.1 |
+| Safe `{name}` interpolation with `{{` / `}}` escapes | 0.1 |
+| Plural entries with explicit `zero` and a one/other rule | 0.1 |
+| Current locale via `contextvars` (`use()` / `set_locale()`), safe across asyncio tasks and threads | 0.1 |
+| `missing` policy, `LocJsonError` hierarchy with file path + JSON pointer | 0.1 |
+| `reload()`, `negotiate()` (Accept-Language), `direction()` (LTR/RTL) | 0.1 |
+| Custom loaders via a `Loader` protocol, in-memory `DictLoader` | 0.1 |
 | CLDR plural rules for 17 built-in languages, optional Babel for the rest | planned 0.2 |
 | `locjson` CLI: `init`, `check`, `stats`, `fmt` | planned 0.3 |
 | `locjson` CLI: `sync`, `extract`, `import --from i18next` | planned 0.4 |
@@ -65,7 +65,11 @@ locjson requires **Python 3.11+** and has no runtime dependencies.
 pip install locjson
 ```
 
-> The first release (0.1.0) is not published yet, so this command will not work until then.
+> 0.1.0 is not on PyPI yet. Until it is published, install the current code from GitHub:
+>
+> ```bash
+> pip install "git+https://github.com/fleizean/locjson.git"
+> ```
 
 Optional extras, for features that are still planned:
 
@@ -309,7 +313,7 @@ Every command will support `--format text`, `json` or `github` (inline annotatio
 
 | Version | Focus | Status |
 |---|---|---|
-| **0.1** | Core runtime: JSON catalogs, fallback chains, safe interpolation, explicit-zero/one/other plurals, current locale, `reload()`, `negotiate()`, `direction()` | In progress |
+| **0.1** | Core runtime: JSON catalogs, fallback chains, safe interpolation, explicit-zero/one/other plurals, current locale, `reload()`, `negotiate()`, `direction()` | Release in progress |
 | **0.2** | CLDR plural rules for 17 built-in languages, optional Babel for full CLDR coverage | Planned |
 | **0.3** | CLI part 1: `init`, `check`, `stats`, `fmt`, output formats, pre-commit hooks | Planned |
 | **0.4** | CLI part 2: `sync`, `extract`, `import --from i18next` | Planned |
