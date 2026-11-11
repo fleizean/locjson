@@ -31,7 +31,7 @@ from locjson.translator import Translator
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from decimal import Decimal
-    from typing import NamedTuple
+    from typing import NamedTuple, SupportsIndex
 
     from locjson.catalog import Catalog, Entry
     from locjson.loaders.base import Loader
@@ -387,7 +387,7 @@ class Localizer:
         /,
         *,
         locale: str | None = None,
-        count: int | float | Decimal | None = None,
+        count: int | float | Decimal | SupportsIndex | None = None,
         context: None = None,
         **variables: object,
     ) -> str:
@@ -400,17 +400,19 @@ class Localizer:
                 :attr:`current_locale`. An invalid tag falls back to the
                 default locale.
             count: The quantity for plural messages: an ``int``, ``float`` or
-                ``Decimal``. The form follows the CLDR plural rule of the
-                catalog that holds the message, and a ``zero`` form wins for
-                any count equal to 0. ``Decimal`` counts keep their visible
-                fraction digits (``Decimal("1.0")`` is ``other`` in English,
-                ``one`` in Turkish); a float is read through its shortest
-                ``repr``. ``count`` is also available to templates as
+                ``Decimal``, or another integer type with ``__index__``, such
+                as NumPy's ``np.int64``. The form follows the CLDR plural rule
+                of the catalog that holds the message, and a ``zero`` form
+                wins for any count equal to 0. ``Decimal`` counts keep their
+                visible fraction digits (``Decimal("1.0")`` is ``other`` in
+                English, ``one`` in Turkish); a float, including a subclass
+                such as ``np.float64``, is read through the shortest ``repr``
+                of its value. ``count`` is also available to templates as
                 ``{count}``. A plural message without ``count`` uses its
                 ``other`` form. An invalid count (a ``bool``, a string, NaN,
-                an infinity, any other type, or more than 1000 integer or
-                fraction digits) is a slip: the ``other`` form is used and
-                ``{count}`` stays literal.
+                an infinity, any other type, such as ``Fraction``, or more
+                than 1000 integer or fraction digits) is a slip: the
+                ``other`` form is used and ``{count}`` stays literal.
             context: Reserved for a future version; must be ``None``.
             **variables: Placeholder values. A placeholder without a value is
                 kept as literal ``{name}`` text.

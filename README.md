@@ -336,7 +336,7 @@ print(l10n_ru.t("files", count=21))                  # -> 21 файл
 print(l10n_ru.t("files", count=1.5))                 # -> 1.5 файла
 ```
 
-A count can be an `int`, a `float` or a `Decimal`. A float is read through its shortest `repr`, so `1.0` counts as the integer 1. Pass a `Decimal` to keep visible decimals: `Decimal("1.0")` is `other` in English ("1.0 messages") but `one` in Turkish, because the two languages' rules treat visible decimals differently.
+A count can be an `int`, a `float` or a `Decimal`, or another integer type with `__index__`, such as NumPy's `np.int64`. A float is read through its shortest `repr`, so `1.0` counts as the integer 1. Pass a `Decimal` to keep visible decimals: `Decimal("1.0")` is `other` in English ("1.0 messages") but `one` in Turkish, because the two languages' rules treat visible decimals differently.
 
 <!-- exec -->
 ```python

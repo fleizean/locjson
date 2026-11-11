@@ -110,6 +110,34 @@ def test_numpy_like_float_counts_pick_the_cldr_form() -> None:
     assert strict.t("x", count=NumpyLikeFloat(2.5)) == "other 2.5"
 
 
+class IndexCount:
+    """An integer type that is not an ``int``, like NumPy's ``np.int64``."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+    @override
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+def test_integer_types_with_index_are_counts() -> None:
+    # IN-03: np.int64 is not an int subclass, but it is an integer.
+    ru = {"one": "{count} one", "few": "{count} few", "many": "{count} many"}
+    l10n = _l10n({"en": _X, "ru": {"x": {**ru, "other": "other"}}})
+    assert l10n.t("x", count=IndexCount(1)) == "one 1"
+    assert l10n.t("x", count=IndexCount(-7)) == "other -7"
+    assert l10n.t("x", locale="ru", count=IndexCount(2)) == "2 few"
+    assert l10n.t("x", locale="ru", count=IndexCount(5)) == "5 many"
+    assert l10n.t("x", locale="ru", count=IndexCount(21)) == "21 one"
+    assert _l10n(strict=True).t("x", count=IndexCount(2)) == "other 2"
+
+
 def test_counts_at_the_digit_cap_render() -> None:
     big = 10**1000 - 1
     l10n = _l10n()
