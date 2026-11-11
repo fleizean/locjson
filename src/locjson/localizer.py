@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import collections
 import threading
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from locjson import _log
 from locjson._compat import override
@@ -24,11 +24,10 @@ from locjson.plural.resolver import select_form
 
 if TYPE_CHECKING:
     import os
-    from collections.abc import Mapping, Sequence
     from decimal import Decimal
     from typing import NamedTuple
 
-    from locjson.catalog import Catalog
+    from locjson.catalog import Catalog, Entry
     from locjson.formatting import Template
     from locjson.loaders.base import Loader
 
@@ -47,6 +46,8 @@ MissingPolicy: TypeAlias = Literal["key", "empty", "raise"] | Callable[[str, str
 the result of ``policy(key, locale)``."""
 
 _MISSING_POLICIES = frozenset({"key", "empty", "raise"})
+_CHAIN_CACHE_MAX = 256
+_TAG_LOG_LIMIT = 64
 
 
 class Localizer:
@@ -56,32 +57,42 @@ class Localizer:
     snapshots, so a warm lookup is a dictionary access plus a join of
     precompiled segments with no file I/O.
 
+    Request-time locale tags (``t(locale=...)``, ``has(locale=...)``) only
+    select among the discovered locales. An invalid tag falls back to
+    ``default_locale`` with a DEBUG record and never reaches the loader.
+
     Args:
-        path: A directory of ``<locale>.json`` files. Shorthand for
-            ``loader=FilesystemLoader(path)``.
+        path: A directory of ``<locale>.json`` files or ``<locale>/``
+            directories. Shorthand for ``loader=FilesystemLoader(path)``.
         loader: Any :class:`~locjson.Loader`. Pass exactly one of ``path`` and
             ``loader``.
         default_locale: The locale used when none is requested, and the last
             step of every fallback chain. It must be one of the discovered
             locales.
         fallbacks: Extra locales to try per locale, for example
-            ``{"pt-BR": ["pt"]}``. A plain string value is one locale.
+            ``{"pt-BR": ["pt"]}``. Each value is a list or tuple of tags.
         missing: What ``t()`` does when no locale in the chain has the key:
             ``"key"`` (return the key), ``"empty"``, ``"raise"``, or a
-            callable ``(key, locale) -> str``.
-        preload: Load and validate every discovered locale up front.
+            callable ``(key, locale) -> str`` whose result is returned as-is.
+            ``"raise"`` also makes missing variables and a missing ``count``
+            raise :class:`~locjson.InterpolationError`.
+        preload: Load and validate every discovered locale in the constructor,
+            so a broken catalog fails at startup instead of at first use.
 
     Raises:
         ConfigurationError: If both or neither of ``path`` and ``loader`` are
-            given, ``missing`` is not a valid policy, the catalog directory does
-            not exist, or ``default_locale`` is not a discovered locale.
+            given, ``loader`` is not a Loader, ``missing`` is not a valid
+            policy, ``fallbacks`` is not a mapping of tags to lists of tags,
+            the catalog directory does not exist, or ``default_locale`` is not
+            a discovered locale.
         InvalidLocaleError: If ``default_locale`` or a ``fallbacks`` tag is not
             a valid locale tag.
-        InvalidCatalogError: If discovery finds a file name that is not a valid
-            locale tag.
+        InvalidCatalogError: If discovery finds a name that is not a valid
+            locale tag, or ``preload=True`` and a catalog is invalid.
     """
 
     __slots__ = (
+        "_chains",
         "_default",
         "_fallbacks",
         "_loader",
@@ -97,34 +108,25 @@ class Localizer:
         *,
         loader: Loader | None = None,
         default_locale: str = "en",
-        fallbacks: Mapping[str, Sequence[str] | str] | None = None,
+        fallbacks: Mapping[str, Sequence[str]] | None = None,
         missing: MissingPolicy = "key",
         preload: bool = False,
     ) -> None:
-        if path is not None:
-            if loader is not None:
-                msg = "pass either path= or loader=, not both"
-                raise ConfigurationError(msg)
-            loader = FilesystemLoader(path)
-        elif loader is None:
-            msg = "pass a catalog directory as path= or a Loader as loader="
-            raise ConfigurationError(msg)
+        self._loader: Loader = _make_loader(path, loader)
         if not (callable(missing) or missing in _MISSING_POLICIES):
             msg = (
                 f"missing= must be 'key', 'empty', 'raise' or a callable, "
                 f"got {missing!r}"
             )
             raise ConfigurationError(msg)
-        self._loader: Loader = loader
-        self._default = normalize(default_locale)
-        self._fallbacks: dict[str, tuple[str, ...]] = {
-            normalize(tag): _normalize_all(chain)
-            for tag, chain in (fallbacks or {}).items()
-        }
         self._missing: MissingPolicy = missing
+        self._default = normalize(default_locale)
+        self._fallbacks = _normalize_fallbacks(fallbacks)
         self._preload = preload
         self._lock = threading.Lock()
-        available = frozenset(loader.discover_locales())
+        # Canonical tag -> fallback chain. Cleared when full (bounded, A8).
+        self._chains: dict[str, tuple[str, ...]] = {}
+        available = frozenset(self._loader.discover_locales())
         if self._default not in available:
             msg = (
                 f"default_locale {self._default!r} is not among the discovered "
@@ -132,6 +134,10 @@ class Localizer:
             )
             raise ConfigurationError(msg)
         self._snapshot = _Snapshot(available, {})
+        if preload:
+            with self._lock:
+                catalogs = {tag: self._build(tag) for tag in sorted(available)}
+                self._snapshot = _Snapshot(available, catalogs)
 
     @override
     def __repr__(self) -> str:
@@ -160,7 +166,8 @@ class Localizer:
         """Translate ``key``, trying each locale of the fallback chain in turn.
 
         Args:
-            key: A flat dot key such as ``"nav.home"``.
+            key: A flat dot key such as ``"nav.home"``. Keys are compared
+                exactly, with no case folding or Unicode normalization.
             locale: The locale to translate into. Defaults to the default
                 locale. An invalid tag falls back to the default locale.
             count: The quantity for plural messages. It is also available to
@@ -186,27 +193,73 @@ class Localizer:
         if reserved is not None:
             msg = "context= is reserved for a future version of locjson"
             raise LocJsonError(msg)
-        tag = self._resolve(locale)
+        tag = self._resolve_locale(locale)
+        found = self._find(key, tag)
+        if found is None:
+            return self._on_missing(key, tag)
+        entry, source = found
+        if count is not None:
+            variables["count"] = count
+            if isinstance(entry, PluralEntry):
+                # The rules follow the catalog that supplied the entry.
+                entry = select_form(entry, source, count)
+        elif isinstance(entry, PluralEntry):
+            entry = self._without_count(entry, key)
+        return entry.render(variables, strict=self._missing == "raise", key=key)
+
+    def has(self, key: str, /, *, locale: str | None = None) -> bool:
+        """Tell whether some locale in the chain translates ``key``.
+
+        Only real translations count: a non-empty string or a plural entry.
+        Group prefixes such as ``"nav"`` and keys whose value is ``""`` or
+        ``null`` are not translations. The ``missing`` policy is never used.
+
+        Args:
+            key: A flat dot key.
+            locale: The locale whose chain is searched. Defaults to the
+                default locale; an invalid tag falls back to it.
+
+        Returns:
+            ``True`` if a translation exists.
+
+        Raises:
+            InvalidCatalogError: If a catalog needed for the lookup is invalid.
+        """
+        return self._find(key, self._resolve_locale(locale)) is not None
+
+    def _resolve_locale(self, locale: str | None) -> str:
+        if locale is None:
+            return self._default
+        try:
+            return normalize(locale)
+        except InvalidLocaleError:
+            # Request tags are attacker-controlled: log a truncated repr only.
+            shown = str(locale)[:_TAG_LOG_LIMIT]
+            _log.debug("locjson: invalid locale tag %r; using %r", shown, self._default)
+            return self._default
+
+    def _chain(self, tag: str) -> tuple[str, ...]:
+        chains = self._chains
+        chain = chains.get(tag)
+        if chain is None:
+            chain = fallback_chain(tag, self._fallbacks, self._default)
+            if len(chains) >= _CHAIN_CACHE_MAX:
+                chains.clear()
+            chains[tag] = chain
+        return chain
+
+    def _find(self, key: str, tag: str) -> tuple[Entry, str] | None:
         snapshot = self._snapshot
-        strict = self._missing == "raise"
-        for candidate in fallback_chain(tag, self._fallbacks, self._default):
+        for candidate in self._chain(tag):
             if candidate not in snapshot.available:
                 continue
             catalog = snapshot.catalogs.get(candidate)
             if catalog is None:
                 catalog = self._catalog(candidate)
             entry = catalog.get(key)
-            if entry is None:
-                continue
-            if count is not None:
-                variables["count"] = count
-                if isinstance(entry, PluralEntry):
-                    # The rules follow the catalog that supplied the entry.
-                    entry = select_form(entry, catalog.locale, count)
-            elif isinstance(entry, PluralEntry):
-                entry = self._without_count(entry, key)
-            return entry.render(variables, strict=strict, key=key)
-        return self._on_missing(key, tag)
+            if entry is not None:
+                return entry, catalog.locale
+        return None
 
     def _without_count(self, entry: PluralEntry, key: str) -> Template:
         if self._missing == "raise":
@@ -224,27 +277,69 @@ class Localizer:
             raise MissingTranslationError(key, tag)
         return "" if policy == "empty" else key
 
-    def _resolve(self, locale: str | None) -> str:
-        if locale is None:
-            return self._default
-        try:
-            return normalize(locale)
-        except InvalidLocaleError:
-            return self._default
+    def _build(self, tag: str) -> Catalog:
+        return build_catalog(tag, self._loader.load(tag)).unwrap()
 
     def _catalog(self, tag: str) -> Catalog:
         with self._lock:
             snapshot = self._snapshot
             catalog = snapshot.catalogs.get(tag)
             if catalog is None:
-                catalog = build_catalog(tag, self._loader.load(tag)).unwrap()
+                catalog = self._build(tag)
                 self._snapshot = _Snapshot(
                     snapshot.available, {**snapshot.catalogs, tag: catalog}
                 )
             return catalog
 
 
-def _normalize_all(tags: Sequence[str] | str) -> tuple[str, ...]:
-    if isinstance(tags, str):
-        return (normalize(tags),)
-    return tuple(normalize(tag) for tag in tags)
+def _make_loader(path: str | os.PathLike[str] | None, loader: object) -> Loader:
+    if path is not None:
+        if loader is not None:
+            msg = "pass either path= or loader=, not both"
+            raise ConfigurationError(msg)
+        return FilesystemLoader(path)
+    if loader is None:
+        msg = "pass a catalog directory as path= or a Loader as loader="
+        raise ConfigurationError(msg)
+    # The structural check of runtime_checkable isinstance(), without its
+    # inspect import on 3.12+.
+    if not all(
+        callable(getattr(loader, name, None)) for name in ("discover_locales", "load")
+    ):
+        msg = (
+            "loader= must be a Loader with discover_locales() and load(), "
+            f"got {type(loader).__name__}"
+        )
+        raise ConfigurationError(msg)
+    return cast("Loader", loader)
+
+
+def _normalize_fallbacks(fallbacks: object) -> dict[str, tuple[str, ...]]:
+    # Typed loosely on purpose: callers may pass anything at runtime.
+    if fallbacks is None:
+        return {}
+    if not isinstance(fallbacks, Mapping):
+        msg = (
+            "fallbacks= must be a mapping of locale tags to lists of tags, "
+            f"got {type(fallbacks).__name__}"
+        )
+        raise ConfigurationError(msg)
+    result: dict[str, tuple[str, ...]] = {}
+    for tag, chain in fallbacks.items():
+        if isinstance(chain, str) or not isinstance(chain, Sequence):
+            msg = (
+                f"fallbacks[{tag!r}] must be a list of locale tags, got "
+                f"{type(chain).__name__}"
+            )
+            raise ConfigurationError(msg)
+        tags: list[str] = []
+        for item in chain:
+            if not isinstance(item, str):
+                msg = (
+                    f"fallbacks[{tag!r}] must contain only locale tags, got "
+                    f"{type(item).__name__}"
+                )
+                raise ConfigurationError(msg)
+            tags.append(normalize(item))
+        result[normalize(tag)] = tuple(tags)
+    return result
