@@ -131,6 +131,39 @@ jobs:
       - run: uv run --no-sync coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
       - run: uv run --no-sync coverage report # enforces fail_under = 90
 
+  # The FastAPI, Flask and Django examples, each in its own venv with only the
+  # packages from its requirements.txt. Not a required check. The
+  # dependency-free examples run in the test matrix (tests/test_examples.py).
+  examples-frameworks:
+    name: examples-frameworks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - name: Test examples/fastapi
+        working-directory: examples/fastapi
+        run: |
+          uv venv --python 3.14 "$RUNNER_TEMP/fastapi"
+          uv pip install --python "$RUNNER_TEMP/fastapi" -e ../.. -r requirements.txt
+          "$RUNNER_TEMP/fastapi/bin/python" -m pytest -p no:cacheprovider
+      - name: Test examples/flask
+        working-directory: examples/flask
+        run: |
+          uv venv --python 3.14 "$RUNNER_TEMP/flask"
+          uv pip install --python "$RUNNER_TEMP/flask" -e ../.. -r requirements.txt
+          "$RUNNER_TEMP/flask/bin/python" -m pytest -p no:cacheprovider
+      - name: Test examples/django
+        working-directory: examples/django
+        run: |
+          uv venv --python 3.14 "$RUNNER_TEMP/django"
+          uv pip install --python "$RUNNER_TEMP/django" -e ../.. -r requirements.txt
+          "$RUNNER_TEMP/django/bin/python" -m pytest -p no:cacheprovider
+
   build:
     name: build
     runs-on: ubuntu-latest
