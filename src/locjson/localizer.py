@@ -7,9 +7,16 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+from locjson import _log
 from locjson._compat import override
 from locjson.catalog import build_catalog
-from locjson.errors import ConfigurationError, InvalidLocaleError, LocJsonError
+from locjson.errors import (
+    ConfigurationError,
+    InterpolationError,
+    InvalidLocaleError,
+    LocJsonError,
+    MissingTranslationError,
+)
 from locjson.loaders.filesystem import FilesystemLoader
 from locjson.locale import fallback_chain, normalize
 from locjson.plural.categories import PluralEntry
@@ -22,6 +29,7 @@ if TYPE_CHECKING:
     from typing import NamedTuple
 
     from locjson.catalog import Catalog
+    from locjson.formatting import Template
     from locjson.loaders.base import Loader
 
     class _Snapshot(NamedTuple):
@@ -156,17 +164,22 @@ class Localizer:
             locale: The locale to translate into. Defaults to the default
                 locale. An invalid tag falls back to the default locale.
             count: The quantity for plural messages. It is also available to
-                templates as ``{count}``.
+                templates as ``{count}``. A plural message without ``count``
+                uses its ``other`` form.
             context: Reserved for a future version; must be ``None``.
             **variables: Placeholder values. A placeholder without a value is
                 kept as literal ``{name}`` text.
 
         Returns:
-            The rendered translation, or the key itself when no locale in the
-            chain has it.
+            The rendered translation. When no locale in the chain has the key,
+            the result of the ``missing`` policy (the key itself by default).
 
         Raises:
             LocJsonError: If ``context`` is not ``None``.
+            MissingTranslationError: If the key is missing everywhere and the
+                policy is ``"raise"``.
+            InterpolationError: Under ``missing="raise"``, if a placeholder has
+                no value or a plural message is called without ``count``.
             InvalidCatalogError: If a catalog needed for the lookup is invalid.
         """
         reserved: object = context  # typed None, but callers may pass anything
@@ -175,7 +188,7 @@ class Localizer:
             raise LocJsonError(msg)
         tag = self._resolve(locale)
         snapshot = self._snapshot
-        values = variables if count is None else {**variables, "count": count}
+        strict = self._missing == "raise"
         for candidate in fallback_chain(tag, self._fallbacks, self._default):
             if candidate not in snapshot.available:
                 continue
@@ -185,15 +198,31 @@ class Localizer:
             entry = catalog.get(key)
             if entry is None:
                 continue
-            if isinstance(entry, PluralEntry):
-                # The rules follow the catalog that supplied the entry.
-                entry = (
-                    entry.other
-                    if count is None
-                    else select_form(entry, catalog.locale, count)
-                )
-            return entry.render(values)
-        return key
+            if count is not None:
+                variables["count"] = count
+                if isinstance(entry, PluralEntry):
+                    # The rules follow the catalog that supplied the entry.
+                    entry = select_form(entry, catalog.locale, count)
+            elif isinstance(entry, PluralEntry):
+                entry = self._without_count(entry, key)
+            return entry.render(variables, strict=strict, key=key)
+        return self._on_missing(key, tag)
+
+    def _without_count(self, entry: PluralEntry, key: str) -> Template:
+        if self._missing == "raise":
+            msg = f"plural key {key!r} needs count="
+            raise InterpolationError(key, "count", msg)
+        _log.debug("locjson: plural key %r called without count; using 'other'", key)
+        return entry.other
+
+    def _on_missing(self, key: str, tag: str) -> str:
+        _log.debug("locjson: no translation for %r in %r or its fallbacks", key, tag)
+        policy = self._missing
+        if callable(policy):
+            return policy(key, tag)
+        if policy == "raise":
+            raise MissingTranslationError(key, tag)
+        return "" if policy == "empty" else key
 
     def _resolve(self, locale: str | None) -> str:
         if locale is None:

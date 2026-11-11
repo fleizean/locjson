@@ -12,7 +12,9 @@ import re
 import string
 from typing import TYPE_CHECKING
 
+from locjson import _log
 from locjson._compat import override
+from locjson.errors import InterpolationError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -83,18 +85,27 @@ class Template:
         """Literal and placeholder segments, alternating, literal first."""
         return self._segments
 
-    def render(self, values: Mapping[str, object]) -> str:
+    def render(
+        self, values: Mapping[str, object], *, strict: bool = False, key: str = ""
+    ) -> str:
         """Fill the placeholders from ``values``.
 
         Each present value is inserted as ``str(value)`` and is never parsed
         again, so a value containing braces stays literal. A placeholder with no
-        value is kept as the literal text ``{name}``.
+        value is kept as the literal text ``{name}`` and a DEBUG record naming
+        the placeholder and ``key`` (never a value) is logged on ``locjson``.
 
         Args:
             values: Placeholder values by name.
+            strict: Raise instead of keeping a placeholder without a value.
+            key: The translation key, used in log records and errors.
 
         Returns:
             The rendered text.
+
+        Raises:
+            InterpolationError: If ``strict`` is true and a placeholder has no
+                value.
         """
         segments = self._segments
         if len(segments) == 1:
@@ -103,7 +114,14 @@ class Template:
         for index in range(1, len(segments), 2):
             name = segments[index]
             value = values.get(name, _MISSING)
-            parts.append("{" + name + "}" if value is _MISSING else str(value))
+            if value is _MISSING:
+                if strict:
+                    msg = f"missing variable {name!r} for key {key!r}"
+                    raise InterpolationError(key, name, msg)
+                _log.debug("locjson: missing variable %r for key %r", name, key)
+                parts.append("{" + name + "}")
+            else:
+                parts.append(str(value))
             parts.append(segments[index + 1])
         return "".join(parts)
 

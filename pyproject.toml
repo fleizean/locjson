@@ -191,5 +191,5 @@ layers = [
   "loaders : catalog",
   "plural",
   "locale : formatting : _jsonio",
-  "errors : _compat",
+  "errors : _compat : _log",
 ]

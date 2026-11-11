@@ -16,6 +16,7 @@ from locjson import (
     Localizer,
     LocJsonError,
     MissingTranslationError,
+    _log,
 )
 
 if TYPE_CHECKING:
@@ -191,6 +192,15 @@ handlers = [type(h).__name__ for h in logging.getLogger("locjson").handlers]
 print(json.dumps({"before": before, "after": "logging" in sys.modules,
                   "handlers": handlers}))
 """
+
+
+def test_get_logger_attaches_a_single_null_handler() -> None:
+    _log.get_logger.cache_clear()
+    logger = _log.get_logger()
+    _log.get_logger.cache_clear()  # a racing first call runs the body again
+    assert _log.get_logger() is logger
+    nulls = [h for h in logger.handlers if isinstance(h, logging.NullHandler)]
+    assert len(nulls) == 1
 
 
 def test_logging_is_imported_lazily_on_the_first_slip() -> None:
