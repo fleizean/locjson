@@ -17,7 +17,7 @@ from locjson._compat import override
 from locjson.errors import InterpolationError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
 __all__ = ["Template", "TemplateError", "compile_template"]
 
@@ -86,19 +86,29 @@ class Template:
         return self._segments
 
     def render(
-        self, values: Mapping[str, object], *, strict: bool = False, key: str = ""
+        self,
+        values: Mapping[str, object],
+        *,
+        strict: bool = False,
+        key: str = "",
+        locale: str = "",
+        on_missing: Callable[[str, str, str], None] | None = None,
     ) -> str:
         """Fill the placeholders from ``values``.
 
         Each present value is inserted as ``str(value)`` and is never parsed
         again, so a value containing braces stays literal. A placeholder with no
-        value is kept as the literal text ``{name}`` and a DEBUG record naming
-        the placeholder and ``key`` (never a value) is logged on ``locjson``.
+        value is kept as the literal text ``{name}`` and reported: to
+        ``on_missing(key, locale, name)`` when given, otherwise as a DEBUG
+        record on ``locjson`` that names the placeholder and ``key``, never a
+        value.
 
         Args:
             values: Placeholder values by name.
             strict: Raise instead of keeping a placeholder without a value.
-            key: The translation key, used in log records and errors.
+            key: The translation key, used in reports and errors.
+            locale: The locale of the lookup, passed to ``on_missing``.
+            on_missing: Called once per placeholder without a value.
 
         Returns:
             The rendered text.
@@ -118,7 +128,10 @@ class Template:
                 if strict:
                     msg = f"missing variable {name!r} for key {key!r}"
                     raise InterpolationError(key, name, msg)
-                _log.debug("locjson: missing variable %r for key %r", name, key)
+                if on_missing is None:
+                    _log.debug("locjson: missing variable %r for key %r", name, key)
+                else:
+                    on_missing(key, locale, name)
                 parts.append("{" + name + "}")
             else:
                 parts.append(str(value))

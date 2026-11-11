@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, TypeAlias, cast
@@ -23,12 +24,10 @@ from locjson.plural.categories import PluralEntry
 from locjson.plural.resolver import select_form
 
 if TYPE_CHECKING:
-    import os
     from decimal import Decimal
     from typing import NamedTuple
 
     from locjson.catalog import Catalog, Entry
-    from locjson.formatting import Template
     from locjson.loaders.base import Loader
 
     class _Snapshot(NamedTuple):
@@ -48,6 +47,9 @@ the result of ``policy(key, locale)``."""
 _MISSING_POLICIES = frozenset({"key", "empty", "raise"})
 _CHAIN_CACHE_MAX = 256
 _TAG_LOG_LIMIT = 64
+_STRICT_ENV = "LOCJSON_STRICT"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"", "0", "false", "no", "off"})
 
 
 class Localizer:
@@ -78,13 +80,27 @@ class Localizer:
             raise :class:`~locjson.InterpolationError`.
         preload: Load and validate every discovered locale in the constructor,
             so a broken catalog fails at startup instead of at first use.
+        strict: Make every slip raise, exactly as ``missing="raise"`` does,
+            whatever ``missing`` says. ``None`` (the default) reads the
+            ``LOCJSON_STRICT`` environment variable once, here: ``1``,
+            ``true``, ``yes`` or ``on`` turn it on, and ``0``, ``false``,
+            ``no``, ``off`` or an empty value leave it off (case-insensitive).
+            For example ``strict=settings.DEBUG``.
+
+    Slips (a missing key, a missing variable or a plural message without
+    ``count``) are lenient unless strict. Each is logged on the ``locjson``
+    logger at WARNING the first time per ``(kind, locale, key)`` for this
+    Localizer, and at DEBUG afterwards. Records name keys, locales and
+    placeholders, never variable values. Invalid request-time locale tags are
+    logged at DEBUG only, because they come from request input.
 
     Raises:
         ConfigurationError: If both or neither of ``path`` and ``loader`` are
             given, ``loader`` is not a Loader, ``missing`` is not a valid
             policy, ``fallbacks`` is not a mapping of tags to lists of tags,
-            the catalog directory does not exist, or ``default_locale`` is not
-            a discovered locale.
+            ``strict`` is not a bool or ``None``, ``LOCJSON_STRICT`` holds
+            another value, the catalog directory does not exist, or
+            ``default_locale`` is not a discovered locale.
         InvalidLocaleError: If ``default_locale`` or a ``fallbacks`` tag is not
             a valid locale tag.
         InvalidCatalogError: If discovery finds a name that is not a valid
@@ -98,8 +114,12 @@ class Localizer:
         "_loader",
         "_lock",
         "_missing",
+        "_on_variable",
         "_preload",
+        "_raises",
+        "_slips",
         "_snapshot",
+        "_strict",
     )
 
     def __init__(
@@ -111,6 +131,7 @@ class Localizer:
         fallbacks: Mapping[str, Sequence[str]] | None = None,
         missing: MissingPolicy = "key",
         preload: bool = False,
+        strict: bool | None = None,
     ) -> None:
         self._loader: Loader = _make_loader(path, loader)
         if not (callable(missing) or missing in _MISSING_POLICIES):
@@ -120,6 +141,11 @@ class Localizer:
             )
             raise ConfigurationError(msg)
         self._missing: MissingPolicy = missing
+        self._strict = _resolve_strict(strict)
+        # Every slip raises when strict or under missing="raise".
+        self._raises = self._strict or missing == "raise"
+        self._slips = _log.SlipLog()
+        self._on_variable = self._slips.variable  # bound once, not per call
         self._default = normalize(default_locale)
         self._fallbacks = _normalize_fallbacks(fallbacks)
         self._preload = preload
@@ -153,6 +179,11 @@ class Localizer:
         """The canonical default locale."""
         return self._default
 
+    @property
+    def strict(self) -> bool:
+        """Whether every slip raises, as resolved at construction."""
+        return self._strict
+
     def t(
         self,
         key: str,
@@ -184,9 +215,10 @@ class Localizer:
         Raises:
             LocJsonError: If ``context`` is not ``None``.
             MissingTranslationError: If the key is missing everywhere and the
-                policy is ``"raise"``.
-            InterpolationError: Under ``missing="raise"``, if a placeholder has
-                no value or a plural message is called without ``count``.
+                Localizer is strict or the policy is ``"raise"``.
+            InterpolationError: When strict or under ``missing="raise"``, if a
+                placeholder has no value or a plural message is called without
+                ``count``.
             InvalidCatalogError: If a catalog needed for the lookup is invalid.
         """
         reserved: object = context  # typed None, but callers may pass anything
@@ -204,8 +236,14 @@ class Localizer:
                 # The rules follow the catalog that supplied the entry.
                 entry = select_form(entry, source, count)
         elif isinstance(entry, PluralEntry):
-            entry = self._without_count(entry, key)
-        return entry.render(variables, strict=self._missing == "raise", key=key)
+            return self._without_count(entry, key, tag, variables)
+        return entry.render(
+            variables,
+            strict=self._raises,
+            key=key,
+            locale=tag,
+            on_missing=self._on_variable,
+        )
 
     def has(self, key: str, /, *, locale: str | None = None) -> bool:
         """Tell whether some locale in the chain translates ``key``.
@@ -261,20 +299,42 @@ class Localizer:
                 return entry, catalog.locale
         return None
 
-    def _without_count(self, entry: PluralEntry, key: str) -> Template:
-        if self._missing == "raise":
+    def _without_count(
+        self, entry: PluralEntry, key: str, tag: str, variables: dict[str, object]
+    ) -> str:
+        if self._raises:
             msg = f"plural key {key!r} needs count="
             raise InterpolationError(key, "count", msg)
-        _log.debug("locjson: plural key %r called without count; using 'other'", key)
-        return entry.other
+        self._slips.report(
+            "missing count",
+            tag,
+            key,
+            "locjson: missing count for plural key %r in %r; using 'other'",
+            key,
+            tag,
+        )
+
+        def on_missing(key: str, locale: str, name: str) -> None:
+            # The missing count is already reported; other names still are.
+            if name != "count":
+                self._on_variable(key, locale, name)
+
+        return entry.other.render(variables, key=key, locale=tag, on_missing=on_missing)
 
     def _on_missing(self, key: str, tag: str) -> str:
-        _log.debug("locjson: no translation for %r in %r or its fallbacks", key, tag)
+        if self._raises:
+            raise MissingTranslationError(key, tag)
+        self._slips.report(
+            "missing key",
+            tag,
+            key,
+            "locjson: missing key %r in %r and its fallbacks",
+            key,
+            tag,
+        )
         policy = self._missing
         if callable(policy):
             return policy(key, tag)
-        if policy == "raise":
-            raise MissingTranslationError(key, tag)
         return "" if policy == "empty" else key
 
     def _build(self, tag: str) -> Catalog:
@@ -312,6 +372,26 @@ def _make_loader(path: str | os.PathLike[str] | None, loader: object) -> Loader:
         )
         raise ConfigurationError(msg)
     return cast("Loader", loader)
+
+
+def _resolve_strict(strict: object) -> bool:
+    # Typed loosely on purpose: callers may pass anything at runtime.
+    if isinstance(strict, bool):
+        return strict
+    if strict is not None:
+        msg = f"strict= must be True, False or None, got {type(strict).__name__}"
+        raise ConfigurationError(msg)
+    raw = os.environ.get(_STRICT_ENV, "")
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    msg = (
+        f"{_STRICT_ENV} must be one of 1/true/yes/on or 0/false/no/off "
+        f"(or empty), got {raw[:_TAG_LOG_LIMIT]!r}"
+    )
+    raise ConfigurationError(msg)
 
 
 def _normalize_fallbacks(fallbacks: object) -> dict[str, tuple[str, ...]]:

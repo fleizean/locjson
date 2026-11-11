@@ -132,6 +132,7 @@ def test_dedupe_store_is_bounded_fifo(
     for index in range(1100):
         l10n.t(f"missing.{index}")
     assert len(l10n._slips._seen) <= 1024
+    caplog.clear()  # the warm-up WARNINGs reach caplog through the root logger
     with caplog.at_level(logging.DEBUG, logger="locjson"):
         l10n.t("missing.0")  # evicted first, so it warns again
         l10n.t("missing.1099")  # still remembered
@@ -223,6 +224,18 @@ def test_plural_without_count_uses_other(
     (record,) = _records(caplog)
     assert "missing count" in record.getMessage()
     assert "'inbox.messages'" in record.getMessage()
+
+
+def test_plural_without_count_reports_count_once_and_other_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    l10n = _l10n({"en": {"x": {"one": "{who}: one", "other": "{who}: {count}"}}})
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        assert l10n.t("x") == "{who}: {count}"
+    messages = [record.getMessage() for record in _records(caplog)]
+    assert len(messages) == 2
+    assert "missing count" in messages[0]
+    assert "missing variable 'who'" in messages[1]
 
 
 def test_plural_without_count_raises_under_raise(sample_catalogs: Catalogs) -> None:
