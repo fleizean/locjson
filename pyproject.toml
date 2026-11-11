@@ -29,6 +29,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+# Full CLDR plural rules for languages without a built-in rule.
+babel = ["babel>=2.12"]
+
 [project.urls]
 Homepage = "https://github.com/fleizean/locjson"
 Source = "https://github.com/fleizean/locjson"
@@ -185,6 +189,10 @@ name = "Runtime never imports CLI-only or optional modules"
 type = "forbidden"
 source_modules = ["locjson"]
 forbidden_modules = ["argparse", "ast", "tomllib", "babel", "watchfiles"]
+# The optional Babel adapter imports babel inside babel_rule() only: ruff TID253
+# bans module-level babel imports, and tests/test_import_boundary.py plus
+# tests/test_babel.py prove that `import locjson` never loads it.
+ignore_imports = ["locjson.plural._babel -> babel"]
 
 [[tool.importlinter.contracts]]
 name = "Runtime layers"
@@ -192,7 +200,7 @@ type = "layers"
 containers = ["locjson"]
 layers = [
   "localizer",
-  "context : plural.resolver : translator",
+  "context : plural.resolver : plural._babel : translator",
   "loaders : catalog",
   "locale : formatting : plural.categories : plural.operands : plural.rules : _jsonio",
   "errors : _log",

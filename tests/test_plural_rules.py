@@ -181,7 +181,9 @@ def test_zero_without_a_zero_form_follows_the_rule() -> None:
         ("en-IN", "en"),
         ("en-001", "en"),
         ("tr-CY", "tr"),
-        ("sr-Latn", "xx"),
+        # A language neither the built-in table nor Babel knows (sr would get
+        # Babel's rule where the extra is installed).
+        ("xx-Latn", "xx"),
     ],
 )
 def test_lookup_chain(tag: str, rule_tag: str) -> None:

@@ -1,11 +1,17 @@
 """Choosing the plural form for a count.
 
-The plural rule of a catalog follows CLDR 49. It is looked up by the exact
-canonical tag first, then by the tag's script-aware parents
-(:func:`locjson.locale.parents`), then by its language subtag. A language
-without a built-in rule uses the one/other rule (``one`` iff ``i = 1 and
-v = 0``). Lookups are cached (bounded), and each
-:class:`~locjson.Localizer` resolves the rule once per catalog, at load.
+The plural rule of a catalog is found in three steps:
+
+1. The built-in CLDR 49 rules, tried for the exact canonical tag, then for
+   the tag's script-aware parents (:func:`locjson.locale.parents`), then for
+   its language subtag. Built-in languages always use these rules, whether
+   or not Babel is installed.
+2. Babel's CLDR rules, when ``locjson[babel]`` is installed, tried for the
+   same candidates in the same order. The first one Babel knows wins.
+3. Otherwise the one/other rule (``one`` iff ``i = 1 and v = 0``).
+
+Lookups are cached (bounded), and each :class:`~locjson.Localizer` resolves
+the rule once per catalog, at load, so a warm lookup does no Babel work.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ import functools
 from typing import TYPE_CHECKING
 
 from locjson.locale import parents
+from locjson.plural._babel import babel_rule
 from locjson.plural.rules import BUILTIN_RULES, FALLBACK_RULE
 
 if TYPE_CHECKING:
@@ -42,8 +49,13 @@ def rule_for(tag: str) -> PluralRule:
 @functools.lru_cache(maxsize=256)
 def _lookup(tag: str) -> RuleSpec:
     language = tag.partition("-")[0]
-    for candidate in dict.fromkeys((tag, *parents(tag), language)):
+    candidates = tuple(dict.fromkeys((tag, *parents(tag), language)))
+    for candidate in candidates:
         spec = BUILTIN_RULES.get(candidate)
+        if spec is not None:
+            return spec
+    for candidate in candidates:
+        spec = babel_rule(candidate)
         if spec is not None:
             return spec
     return FALLBACK_RULE
