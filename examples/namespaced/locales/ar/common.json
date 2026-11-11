@@ -1,0 +1,6 @@
+{
+  "$meta": { "locale": "ar", "direction": "rtl" },
+  "app": { "name": "ملاحظات السفر" },
+  "greeting": "مرحبًا بعودتك، {name}!",
+  "nav": { "home": "الرئيسية", "trips": "رحلاتي" }
+}

@@ -1,0 +1,13 @@
+{
+  "app": { "name": "Bookshelf" },
+  "greeting": "Hello, {name}!",
+  "shelf": {
+    "books": {
+      "zero": "Your shelf is empty",
+      "one": "You have {count} book on your shelf",
+      "other": "You have {count} books on your shelf"
+    }
+  },
+  "farewell": "See you soon, {name}.",
+  "help": "Type {{title}} to search by title."
+}

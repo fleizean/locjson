@@ -1,0 +1,12 @@
+{
+  "digest": {
+    "subject": "Günlük özetiniz, {name}",
+    "greeting": "Merhaba {name},",
+    "unread": {
+      "zero": "Okunmamış bildiriminiz yok.",
+      "one": "{count} okunmamış bildiriminiz var.",
+      "other": "{count} okunmamış bildiriminiz var."
+    },
+    "signoff": "Acme ekibi"
+  }
+}

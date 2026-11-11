@@ -1,0 +1,11 @@
+{
+  "order": {
+    "thanks": "Siparişiniz için teşekkürler, {name}!",
+    "items": {
+      "zero": "Sepetiniz boş.",
+      "one": "{count} ürün yola çıktı.",
+      "other": "{count} ürün yola çıktı."
+    },
+    "total": "Toplam: {amount}"
+  }
+}
