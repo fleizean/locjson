@@ -188,8 +188,9 @@ type = "layers"
 containers = ["locjson"]
 layers = [
   "localizer",
+  "context : plural.resolver",
   "loaders : catalog",
-  "plural",
-  "locale : formatting : _jsonio",
-  "errors : _compat : _log",
+  "locale : formatting : plural.categories : _jsonio",
+  "errors : _log",
+  "_compat",
 ]

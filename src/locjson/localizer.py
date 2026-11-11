@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from locjson import _log
+from locjson import locale as _locale
 from locjson._compat import override
 from locjson.catalog import build_catalog
 from locjson.context import LocaleContext
@@ -276,6 +277,59 @@ class Localizer:
             catalogs = {tag: self._build(tag) for tag in sorted(targets)}
             # Chains do not depend on availability, so _chains stays valid.
             self._snapshot = _Snapshot(available, catalogs)
+
+    def negotiate(self, accept_language: str | None) -> str:
+        """Pick the best discovered locale for an ``Accept-Language`` header.
+
+        This is :func:`locjson.negotiate` over :attr:`locales`, with
+        :attr:`default_locale` as the fallback. Malformed headers never raise.
+
+        Example:
+            >>> l10n.negotiate("tr-TR,tr;q=0.9,en;q=0.8")  # doctest: +SKIP
+            'tr'
+
+        Args:
+            accept_language: The header value, or ``None`` when it is absent.
+
+        Returns:
+            A canonical tag from :attr:`locales`, or :attr:`default_locale`.
+        """
+        return _locale.negotiate(accept_language, self.locales, self._default)
+
+    def direction(self, locale: str | None = None) -> Literal["ltr", "rtl"]:
+        """Return the text direction of a locale.
+
+        The catalogs along the locale's fallback chain are checked first, in
+        order, and the first ``$meta.direction`` found wins. When none
+        declares one, the built-in table of :func:`locjson.direction` decides
+        for the requested locale.
+
+        Args:
+            locale: A locale tag. Defaults to :attr:`current_locale`; an
+                invalid tag falls back to the default locale.
+
+        Returns:
+            ``"ltr"`` or ``"rtl"``.
+
+        Raises:
+            InvalidCatalogError: If a catalog that has to be loaded is invalid.
+        """
+        tag = self._resolve_locale(locale)
+        chain = self._chain(tag)
+        while True:
+            snapshot = self._snapshot  # one snapshot per attempt, as in _find
+            for candidate in chain:
+                if candidate not in snapshot.available:
+                    continue
+                catalog = snapshot.catalogs.get(candidate)
+                if catalog is None:
+                    self._load(candidate)
+                    break
+                declared = catalog.direction
+                if declared is not None:
+                    return "rtl" if declared == "rtl" else "ltr"
+            else:
+                return _locale.direction(tag)
 
     def t(
         self,

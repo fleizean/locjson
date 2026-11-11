@@ -294,6 +294,29 @@ def test_has_after_a_reload_restarts_from_the_new_snapshot() -> None:
     assert l10n.t("K", locale="tr") == "tr-v1"
 
 
+def test_direction_after_a_reload_restarts_from_the_new_snapshot() -> None:
+    v1: dict[str, dict[str, object]] = {
+        "en": {"K": "en"},
+        "ar": {"$meta": {"direction": "ltr"}, "K": "ar"},
+    }
+    v2: dict[str, dict[str, object]] = {"en": {"K": "en"}, "ar": {"K": "ar"}}
+    loader = VersionedLoader([v1, v2])
+    loader.version = 1
+    l10n = Localizer(loader=loader)
+    assert l10n.t("K", locale="ar") == "ar"  # ar v2 (no $meta) loaded, en cold
+
+    def reload_to_v1() -> None:
+        loader.version = 0
+        l10n.reload()
+
+    chain = _ReloadingChain(("ar", "en"))
+    chain.at = "en"
+    chain.action = reload_to_v1
+    l10n._chains["ar"] = chain
+    # Reading on with the stale snapshot would reach the table ("rtl").
+    assert l10n.direction("ar") == "ltr"
+
+
 def test_lazy_load_of_a_locale_removed_by_a_reload_is_skipped() -> None:
     v1: dict[str, dict[str, object]] = {"en": {"K": "en"}, "tr": {"K": "tr"}}
     v2: dict[str, dict[str, object]] = {"en": {"K": "en"}}
