@@ -24,7 +24,8 @@ from locjson.errors import (
 from locjson.loaders.filesystem import FilesystemLoader
 from locjson.locale import fallback_chain, normalize
 from locjson.plural.categories import PluralEntry
-from locjson.plural.resolver import select_form
+from locjson.plural.operands import plural_operands
+from locjson.plural.resolver import rule_for, select_form
 from locjson.translator import Translator
 
 if TYPE_CHECKING:
@@ -34,14 +35,17 @@ if TYPE_CHECKING:
 
     from locjson.catalog import Catalog, Entry
     from locjson.loaders.base import Loader
+    from locjson.plural.rules import PluralRule
 
     class _Snapshot(NamedTuple):
         available: frozenset[str]
         catalogs: Mapping[str, Catalog]
+        # The plural rule of each catalog, keyed exactly like catalogs.
+        rules: Mapping[str, PluralRule]
 
 else:
     # Functional form: class-syntax typing.NamedTuple imports ast on 3.14 (PKG-03).
-    _Snapshot = collections.namedtuple("_Snapshot", ["available", "catalogs"])
+    _Snapshot = collections.namedtuple("_Snapshot", ["available", "catalogs", "rules"])
 
 __all__ = ["Localizer", "MissingPolicy"]
 
@@ -166,11 +170,11 @@ class Localizer:
                 f"locales {sorted(available)}"
             )
             raise ConfigurationError(msg)
-        self._snapshot = _Snapshot(available, {})
+        self._snapshot = _Snapshot(available, {}, {})
         if preload:
             with self._lock:
                 catalogs = {tag: self._build(tag) for tag in sorted(available)}
-                self._snapshot = _Snapshot(available, catalogs)
+                self._snapshot = _publish(available, catalogs)
 
     @override
     def __repr__(self) -> str:
@@ -277,7 +281,7 @@ class Localizer:
             targets = available if self._preload else available & loaded.keys()
             catalogs = {tag: self._build(tag) for tag in sorted(targets)}
             # Chains do not depend on availability, so _chains stays valid.
-            self._snapshot = _Snapshot(available, catalogs)
+            self._snapshot = _publish(available, catalogs)
 
     def for_locale(self, locale: str) -> Translator:
         """Return a :class:`~locjson.Translator` bound to ``locale``.
@@ -420,12 +424,13 @@ class Localizer:
         found = self._find(key, tag)
         if found is None:
             return self._on_missing(key, tag)
-        entry, source = found
+        entry, rule = found
         if count is not None:
+            operands = plural_operands(count)
             variables["count"] = count
             if isinstance(entry, PluralEntry):
-                # The rules follow the catalog that supplied the entry.
-                entry = select_form(entry, source, count)
+                # The rule follows the catalog that supplied the entry.
+                entry = select_form(entry, operands, rule)
         elif isinstance(entry, PluralEntry):
             return self._without_count(entry, key, tag, variables)
         return entry.render(
@@ -484,7 +489,7 @@ class Localizer:
             chains[tag] = chain
         return chain
 
-    def _find(self, key: str, tag: str) -> tuple[Entry, str] | None:
+    def _find(self, key: str, tag: str) -> tuple[Entry, PluralRule] | None:
         chain = self._chain(tag)
         while True:
             # One snapshot per attempt: never mix catalogs of two generations.
@@ -501,7 +506,8 @@ class Localizer:
                     break
                 entry = catalog.get(key)
                 if entry is not None:
-                    return entry, catalog.locale
+                    # The rule of the same snapshot as the catalog.
+                    return entry, snapshot.rules[candidate]
             else:
                 return None
 
@@ -556,8 +562,16 @@ class Localizer:
             if tag in snapshot.available and tag not in snapshot.catalogs:
                 catalog = self._build(tag)
                 self._snapshot = _Snapshot(
-                    snapshot.available, {**snapshot.catalogs, tag: catalog}
+                    snapshot.available,
+                    {**snapshot.catalogs, tag: catalog},
+                    {**snapshot.rules, tag: rule_for(tag)},
                 )
+
+
+def _publish(available: frozenset[str], catalogs: Mapping[str, Catalog]) -> _Snapshot:
+    # The plural rule of each catalog is resolved here, once, at load.
+    rules = {tag: rule_for(tag) for tag in catalogs}
+    return _Snapshot(available, catalogs, rules)
 
 
 def _make_loader(path: str | os.PathLike[str] | None, loader: object) -> Loader:

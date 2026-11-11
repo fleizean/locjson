@@ -190,7 +190,7 @@ layers = [
   "localizer",
   "context : plural.resolver : translator",
   "loaders : catalog",
-  "locale : formatting : plural.categories : _jsonio",
+  "locale : formatting : plural.categories : plural.operands : plural.rules : _jsonio",
   "errors : _log",
   "_compat",
 ]
