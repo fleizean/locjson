@@ -13,12 +13,15 @@ from locjson._jsonio import read_json
 from locjson.catalog import build_catalog
 from locjson.formatting import compile_template
 from locjson.plural.categories import CATEGORIES, CATEGORY_SET, PluralEntry
-from locjson.plural.resolver import default_resolver, select_form
+from locjson.plural.operands import plural_operands
+from locjson.plural.resolver import rule_for, select_form
+from locjson.plural.rules import FALLBACK_RULE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from locjson.formatting import Template
+    from locjson.plural.operands import Operands
+    from locjson.plural.rules import PluralRule
     from tests.conftest import Catalogs, MakeLocalesDir
 
 localizer_module = importlib.import_module("locjson.localizer")
@@ -129,41 +132,112 @@ def test_count_fills_plain_strings_too(sample_catalogs: Catalogs) -> None:
     assert plain.t("n", count=2) == "2 left"
 
 
-def test_rules_follow_the_supplying_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[str] = []
-
-    def spy(entry: PluralEntry, locale: str, count: float | Decimal) -> Template:
-        seen.append(locale)
-        return select_form(entry, locale, count)
-
-    monkeypatch.setattr(localizer_module, "select_form", spy)
-    l10n = _l10n({"en": {"x": {"one": "one", "other": "other"}}, "tr": {}})
-    assert l10n.t("x", locale="tr", count=1) == "one"
-    assert seen == ["en"]
+def test_rules_follow_the_supplying_catalog() -> None:
+    # en says 21 is "other"; ru would say "one". The en entry is shown, so the
+    # en rule picks its form.
+    l10n = _l10n({"en": {"x": {"one": "one", "other": "other"}}, "ru": {}})
+    assert l10n.t("x", locale="ru", count=21) == "other"
+    assert l10n.t("x", locale="ru", count=1) == "one"
 
 
-def test_select_form_passes_the_catalog_locale_to_the_resolver() -> None:
-    calls: list[tuple[str, object]] = []
+def test_select_form_passes_the_operands_to_the_rule() -> None:
+    calls: list[Operands] = []
 
-    def resolver(locale: str, count: float | Decimal) -> str:
-        calls.append((locale, count))
+    def rule(operands: Operands) -> str:
+        calls.append(operands)
         return "few"
 
     entry = _entry(zero="z", few="f", other="o")
-    assert select_form(entry, "pl", 3, resolver).source == "f"
-    assert select_form(entry, "pl", 0, resolver).source == "z"
-    assert calls == [("pl", 3)]
+    assert select_form(entry, plural_operands(3), rule).source == "f"
+    assert select_form(entry, plural_operands(0), rule).source == "z"
+    assert calls == [plural_operands(3)]
     missing = _entry(other="o")
-    assert select_form(missing, "pl", 3, resolver).source == "o"
+    assert select_form(missing, plural_operands(3), rule).source == "o"
+    no_zero = _entry(few="f", other="o")
+    assert select_form(no_zero, plural_operands(0), rule).source == "f"
 
 
 @pytest.mark.parametrize(
     ("count", "category"),
     [(1, "one"), (-1, "one"), (1.0, "one"), (Decimal(1), "one"), (0, "other")],
 )
-def test_default_resolver(count: float | Decimal, category: str) -> None:
-    assert default_resolver("en", count) == category
-    assert default_resolver("en", 2) == "other"
+def test_unknown_language_uses_the_one_other_rule(
+    count: float | Decimal, category: str
+) -> None:
+    rule = rule_for("xx")
+    assert rule(plural_operands(count)) == category
+    assert rule(plural_operands(2)) == "other"
+    assert rule(plural_operands(Decimal("1.0"))) == "other"
+
+
+def test_rule_lookup_uses_parents_and_language() -> None:
+    assert rule_for("ru-RU") is rule_for("ru")
+    assert rule_for("xx") is FALLBACK_RULE[0]
+    assert rule_for("ru") is not rule_for("en")
+
+
+# --- the rule lookup through the Localizer (tracer) -------------------------
+
+_RU_FILES = {
+    "one": "one {count}",
+    "few": "few {count}",
+    "many": "many {count}",
+    "other": "other {count}",
+}
+
+
+def test_russian_plural_picks_one_few_many() -> None:
+    l10n = _l10n({"ru": {"files": _RU_FILES}}, default="ru")
+    rendered = [l10n.t("files", count=n) for n in (1, 2, 5, 21)]
+    assert rendered == ["one 1", "few 2", "many 5", "one 21"]
+    assert l10n.t("files", count=Decimal("1.5")) == "other 1.5"
+
+
+def test_explicit_zero_beats_the_russian_rule() -> None:
+    l10n = _l10n({"ru": {"files": {**_RU_FILES, "zero": "none"}}}, default="ru")
+    assert l10n.t("files", count=0) == "none"
+    assert l10n.t("files", count=5) == "many 5"
+
+
+def _assert_rules_match_catalogs(l10n: Localizer) -> None:
+    snapshot = l10n._snapshot
+    assert set(snapshot.rules) == set(snapshot.catalogs)
+    for tag, rule in snapshot.rules.items():
+        assert rule is rule_for(tag)
+
+
+def test_snapshot_holds_one_rule_per_catalog() -> None:
+    catalogs = {"en": {"x": "e"}, "ru": {"x": "r"}, "tr": {"x": "t"}}
+    lazy = _l10n(catalogs)
+    _assert_rules_match_catalogs(lazy)
+    assert lazy._snapshot.rules == {}
+    lazy.t("x")
+    lazy.t("x", locale="ru")
+    assert set(lazy._snapshot.rules) == {"en", "ru"}
+    _assert_rules_match_catalogs(lazy)
+    lazy.reload()
+    _assert_rules_match_catalogs(lazy)
+    eager = Localizer(loader=DictLoader(catalogs), preload=True)
+    assert set(eager._snapshot.rules) == {"en", "ru", "tr"}
+    _assert_rules_match_catalogs(eager)
+    eager.reload()
+    _assert_rules_match_catalogs(eager)
+
+
+def test_rule_is_resolved_once_per_loaded_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def counting(tag: str) -> PluralRule:
+        calls.append(tag)
+        return rule_for(tag)
+
+    monkeypatch.setattr(localizer_module, "rule_for", counting)
+    l10n = _l10n({"ru": {"files": _RU_FILES}}, default="ru")
+    for n in range(1000):
+        l10n.t("files", count=n)
+    assert calls == ["ru"]
 
 
 # --- the data model ----------------------------------------------------------

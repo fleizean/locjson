@@ -25,7 +25,7 @@
 
 ---
 
-> **🚧 Status: 0.1.0 release in progress.** The core runtime is complete and the first release, 0.1.0, is being prepared. Until it appears on PyPI, `pip install locjson` will not find it; install from GitHub instead (see [Installation](#installation)). Features marked *planned* do not exist yet.
+> **🚧 Status: 0.2.0 prepared, PyPI release pending.** The core runtime and the CLDR plural rules are complete. Neither 0.1.0 nor 0.2.0 is on PyPI yet, so `pip install locjson` will not find them; install from GitHub instead (see [Installation](#installation)). Features marked *planned* do not exist yet.
 
 ## Why locjson?
 
@@ -47,14 +47,14 @@ locjson keeps translations in **plain JSON** on the backend too, and focuses on 
 | Nested keys flattened to dot keys (`nav.home`) | 0.1 |
 | BCP 47 locale normalization (`pt_BR` → `pt-BR`) and script-aware fallback chains | 0.1 |
 | Safe `{name}` interpolation with `{{` / `}}` escapes | 0.1 |
-| Plural entries with explicit `zero` and a one/other rule | 0.1 |
+| Plural entries keyed by CLDR category, with an explicit `zero` form | 0.1 |
 | Current locale via `contextvars` (`use()` / `set_locale()`), safe across asyncio tasks and threads | 0.1 |
 | Bound translators: `for_locale()` for jobs and e-mails, `scope()` for key prefixes | 0.1 |
 | `missing` policy, `strict=` / `LOCJSON_STRICT`, WARNING-once slip logging | 0.1 |
 | `LocJsonError` hierarchy with file path + JSON pointer | 0.1 |
 | `reload()`, `negotiate()` (Accept-Language), `direction()` (LTR/RTL) | 0.1 |
 | Custom loaders via a `Loader` protocol, in-memory `DictLoader` | 0.1 |
-| CLDR plural rules for 17 built-in languages, optional Babel for the rest | planned 0.2 |
+| CLDR plural rules for 17 built-in languages, `categories_for()`, optional Babel for every other language | 0.2 |
 | `locjson` CLI: `init`, `check`, `stats`, `fmt` | planned 0.3 |
 | `locjson` CLI: `sync`, `extract`, `import --from i18next` | planned 0.4 |
 | `lazy()` strings, hot reload, FastAPI / Django / Flask recipes | planned 0.5 |
@@ -67,16 +67,17 @@ locjson requires **Python 3.11+** and has no runtime dependencies.
 pip install locjson
 ```
 
-> 0.1.0 is not on PyPI yet. Until it is published, install the current code from GitHub:
+> Neither 0.1.0 nor 0.2.0 is on PyPI yet. Until they are published, install the current code from GitHub:
 >
 > ```bash
 > pip install "git+https://github.com/fleizean/locjson.git"
+> pip install "locjson[babel] @ git+https://github.com/fleizean/locjson.git"   # with the babel extra
 > ```
 
-Optional extras, for features that are still planned:
+Optional extras:
 
 ```bash
-pip install "locjson[babel]"   # planned 0.2: full CLDR plural rules via Babel
+pip install "locjson[babel]"   # 0.2: full CLDR plural rules, via Babel, for languages without a built-in rule
 pip install "locjson[watch]"   # planned 0.5: hot reload via watchfiles
 ```
 
@@ -287,11 +288,7 @@ A locale present in both layouts (`en.json` *and* `en/`) is an error that names 
 | `"$meta"` (top level) | File metadata, never a translation |
 | `"$comment"` and other `$` keys | Ignored, handy for notes to translators |
 
-Plural rules:
-
-- `count` is passed to the template automatically, so `{count}` just works.
-- When `count == 0` and the entry has a `zero` form, `zero` is used in every language.
-- Otherwise the language's plural category is used, falling back to `other`. In 0.1 this is a simple one/other rule. CLDR rules for 17 built-in languages arrive in 0.2 *(planned)*.
+How a plural entry picks its form is described in [Plural rules](#plural-rules).
 
 `$meta` describes the file:
 
@@ -305,6 +302,75 @@ Plural rules:
 `locale` must match the file's locale, `direction` is `"ltr"` or `"rtl"`, and unknown `$meta` keys are rejected.
 
 Numbers, booleans and arrays as values, duplicate keys, `NaN`/`Infinity` and key-path collisions are all rejected at load with an `InvalidCatalogError`. Files are read as UTF-8 (a BOM is accepted), so non-ASCII text such as Turkish `İ`/`ı` round-trips unchanged.
+
+### Plural rules
+
+- `count` is passed to the template automatically, so `{count}` just works.
+- When the count equals 0 (`0`, `0.0`, `Decimal("0.00")`) and the entry has a `zero` form, `zero` is used in every language.
+- Otherwise the language's CLDR plural rule picks a category (`zero`, `one`, `two`, `few`, `many` or `other`), and `other` is used when the entry has no form for it.
+
+locjson ships the CLDR 49 cardinal plural rules for 17 languages as plain Python functions: `en`, `tr`, `de`, `fr`, `es`, `it`, `pt`, `nl`, `ru`, `uk`, `pl`, `cs`, `ar`, `he`, `ja`, `zh` and `ko`. `pt-PT` has its own rule, which the locales CLDR groups under it (such as `pt-AO`, `pt-MZ` and `pt-MO`) share, while `pt` and `pt-BR` use the Brazilian one. Regional tags use their language's rule (`ru-UA` uses `ru`). Other languages use a one/other rule (`one` for exactly 1, `other` for everything else) unless [Babel](#more-languages-with-babel) is installed.
+
+The rule follows the catalog that supplied the text: if a Russian request falls back to an English message, the English rule picks its form.
+
+<!-- exec -->
+```python
+from locjson import DictLoader, Localizer
+
+catalogs = {
+    "ru": {
+        "files": {
+            "one": "{count} файл",
+            "few": "{count} файла",
+            "many": "{count} файлов",
+            "other": "{count} файла",
+        }
+    }
+}
+l10n_ru = Localizer(loader=DictLoader(catalogs), default_locale="ru")
+
+print(l10n_ru.t("files", count=1))                   # -> 1 файл
+print(l10n_ru.t("files", count=2))                   # -> 2 файла
+print(l10n_ru.t("files", count=5))                   # -> 5 файлов
+print(l10n_ru.t("files", count=21))                  # -> 21 файл
+print(l10n_ru.t("files", count=1.5))                 # -> 1.5 файла
+```
+
+A count can be an `int`, a `float` or a `Decimal`. A float is read through its shortest `repr`, so `1.0` counts as the integer 1. Pass a `Decimal` to keep visible decimals: `Decimal("1.0")` is `other` in English ("1.0 messages") but `one` in Turkish, because the two languages' rules treat visible decimals differently.
+
+<!-- exec -->
+```python
+from decimal import Decimal
+
+print(l10n.t("inbox.messages", count=1))                 # -> You have 1 message
+print(l10n.t("inbox.messages", count=Decimal("1.0")))    # -> You have 1.0 messages
+```
+
+An invalid count is a slip, like a missing variable: `True` or `False`, a string, NaN, an infinity, any other type, or a number with more than 1000 integer or fraction digits. The `other` form is used, `{count}` stays as literal text, and the slip is logged (see [Logging](#logging)). With `strict=True` or `missing="raise"`, an `InterpolationError` is raised instead.
+
+`categories_for(locale)` returns the categories a locale's rule can produce, found the same way `t()` finds the rule. Use it to check that each locale's plural entries have the forms that locale needs. An invalid tag raises `InvalidLocaleError`.
+
+<!-- exec -->
+```python
+import locjson
+
+print(sorted(locjson.categories_for("ru")))          # -> ['few', 'many', 'one', 'other']
+print(sorted(locjson.categories_for("ja")))          # -> ['other']
+```
+
+### More languages with Babel
+
+```bash
+pip install "locjson[babel]"
+```
+
+With the `babel` extra, languages without a built-in rule get Babel's CLDR rules. For example, a Welsh (`cy`) catalog then uses all six categories: `zero` for 0, `one` for 1, `two` for 2, `few` for 3, `many` for 6 and `other` for 4. The 17 built-in languages always keep their built-in rules, so installing Babel never changes their output. A locale Babel does not know falls back to the one/other rule without raising.
+
+Babel is imported only when a catalog in such a language is first loaded (or `categories_for()` is asked about one), never by `import locjson`. The rule is resolved once per catalog at load, so a warm `t()` does no Babel work.
+
+Latvian (`lv`) and Prussian (`prg`), which get their rules from Babel, have a CLDR `zero` category that also covers 10 to 20, 30, 40 and so on. Write their `zero` forms with `{count}` rather than as "no items".
+
+**Security note:** Babel compiles CLDR rule text into Python code with `eval`, inside its own code and only on the CLDR data bundled with Babel; locjson passes it nothing but a locale tag. locjson's own code never uses `eval`.
 
 ### Interpolation
 
@@ -365,12 +431,12 @@ print(l10n.direction("ar"))                          # -> rtl
 |---|---|
 | `"key"` (default) | Returns the key, e.g. `"nav.profile"` |
 | `"empty"` | Returns `""` |
-| `"raise"` | Raises `MissingTranslationError`, and makes missing variables and a missing `count` raise `InterpolationError` |
+| `"raise"` | Raises `MissingTranslationError`, and makes missing variables and a missing or invalid `count` raise `InterpolationError` |
 | `callable(key, locale)` | Returns whatever your function returns |
 
 ### Strict mode
 
-`strict=True` makes every slip raise, whatever `missing` says: a missing key raises `MissingTranslationError`, and a missing variable or a plural message without `count` raises `InterpolationError`.
+`strict=True` makes every slip raise, whatever `missing` says: a missing key raises `MissingTranslationError`, and a missing variable, a plural message without `count` or an invalid `count` raises `InterpolationError`.
 
 With `strict=None` (the default), the Localizer reads the `LOCJSON_STRICT` environment variable once, when it is created. `1`, `true`, `yes` and `on` turn strict mode on, and `0`, `false`, `no`, `off` and an empty value leave it off (case-insensitive). Any other value raises `ConfigurationError`. The result is available as `l10n.strict`.
 
@@ -382,7 +448,7 @@ LOCJSON_STRICT=1 pytest
 
 ### Logging
 
-Lenient slips (a missing key, a missing variable, a plural message without `count`) are logged on the `locjson` logger. The first time a slip of a given kind happens for a locale and key, it is logged at WARNING. Repeats are logged at DEBUG, so a missing key shows up once instead of on every request. Records name the key, the locale and the placeholder, never the values you pass in.
+Lenient slips (a missing key, a missing variable, a plural message without `count`, an invalid `count`) are logged on the `locjson` logger. The first time a slip of a given kind happens for a locale and key, it is logged at WARNING. Repeats are logged at DEBUG, so a missing key shows up once instead of on every request. Records name the key, the locale and the placeholder, never the values you pass in.
 
 Invalid locale tags at request time, for example from an `Accept-Language` header, are logged at DEBUG only.
 
@@ -396,7 +462,7 @@ All exceptions inherit from `LocJsonError`:
 | `InvalidLocaleError` | A locale tag in the configuration is invalid |
 | `InvalidCatalogError` | A catalog file is invalid. Exposes `.path` and `.pointer` (RFC 6901). |
 | `MissingTranslationError` | A key is missing in strict mode or under `missing="raise"`. Also a `LookupError`. |
-| `InterpolationError` | A variable or `count` is missing in strict mode or under `missing="raise"` |
+| `InterpolationError` | A variable or `count` is missing, or `count` is not a valid number, in strict mode or under `missing="raise"` |
 
 ### Custom loaders
 
@@ -446,8 +512,8 @@ Every command will support `--format text`, `json` or `github` (inline annotatio
 
 | Version | Focus | Status |
 |---|---|---|
-| **0.1** | Core runtime: JSON catalogs, fallback chains, safe interpolation, explicit-zero/one/other plurals, current locale, `reload()`, `negotiate()`, `direction()` | Release in progress |
-| **0.2** | CLDR plural rules for 17 built-in languages, optional Babel for full CLDR coverage | Planned |
+| **0.1** | Core runtime: JSON catalogs, fallback chains, safe interpolation, explicit-zero/one/other plurals, current locale, `reload()`, `negotiate()`, `direction()` | Complete, PyPI release pending |
+| **0.2** | CLDR plural rules for 17 built-in languages, `categories_for()`, optional Babel for full CLDR coverage | Complete and prepared, PyPI release pending |
 | **0.3** | CLI part 1: `init`, `check`, `stats`, `fmt`, output formats, pre-commit hooks | Planned |
 | **0.4** | CLI part 2: `sync`, `extract`, `import --from i18next` | Planned |
 | **0.5** | `lazy()` strings, hot reload, FastAPI / Django / Flask recipes | Planned |
@@ -464,14 +530,14 @@ git clone https://github.com/fleizean/locjson.git
 cd locjson
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e . --group dev     # needs pip 25.1+
+pip install -e ".[babel]" --group dev   # needs pip 25.1+
 
 ruff check . && ruff format --check .
 mypy --strict
 pytest
 ```
 
-CI runs the same checks on Python 3.11 to 3.15 across Linux, macOS and Windows.
+Installing the `babel` extra lets the Babel tests run and lets mypy see Babel's types. CI runs the same checks on Python 3.11 to 3.15 across Linux, macOS and Windows without Babel, to prove the zero-dependency path, plus one job with Babel.
 
 ## License
 

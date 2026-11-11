@@ -40,6 +40,7 @@ PUBLIC = {
     "RawSource",
     "Translator",
     "__version__",
+    "categories_for",
     "direction",
     "for_locale",
     "get_localizer",

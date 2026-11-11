@@ -3,6 +3,7 @@
 Use a :class:`Localizer` directly, or install a default one with
 :func:`setup` and call the module-level :func:`t`, :func:`has`, :func:`use`,
 :func:`set_locale`, :func:`for_locale` and :func:`scope`.
+:func:`categories_for` tells which plural forms a locale needs.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from locjson.errors import (
 from locjson.loaders import DictLoader, FilesystemLoader, Loader, RawSource
 from locjson.locale import direction, negotiate
 from locjson.localizer import Localizer
+from locjson.plural import categories_for
 from locjson.translator import Translator
 
 if TYPE_CHECKING:
@@ -45,6 +47,7 @@ __all__ = [
     "RawSource",
     "Translator",
     "__version__",
+    "categories_for",
     "direction",
     "for_locale",
     "get_localizer",
@@ -170,7 +173,9 @@ def t(
         LocJsonError: If :func:`setup` has not been called, or ``context`` is
             not ``None``.
         MissingTranslationError: If the key is missing and slips raise.
-        InterpolationError: If a value is missing and slips raise.
+        InterpolationError: If a value or ``count`` is missing, or ``count``
+            is invalid (a ``bool``, a string, NaN, an infinity or any other
+            non-number), and slips raise.
         InvalidCatalogError: If a catalog needed for the lookup is invalid.
     """
     return get_localizer().t(

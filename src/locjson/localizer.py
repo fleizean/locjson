@@ -24,7 +24,8 @@ from locjson.errors import (
 from locjson.loaders.filesystem import FilesystemLoader
 from locjson.locale import fallback_chain, normalize
 from locjson.plural.categories import PluralEntry
-from locjson.plural.resolver import select_form
+from locjson.plural.operands import plural_operands
+from locjson.plural.resolver import rule_for, select_form
 from locjson.translator import Translator
 
 if TYPE_CHECKING:
@@ -34,14 +35,17 @@ if TYPE_CHECKING:
 
     from locjson.catalog import Catalog, Entry
     from locjson.loaders.base import Loader
+    from locjson.plural.rules import PluralRule
 
     class _Snapshot(NamedTuple):
         available: frozenset[str]
         catalogs: Mapping[str, Catalog]
+        # The plural rule of each catalog, keyed exactly like catalogs.
+        rules: Mapping[str, PluralRule]
 
 else:
     # Functional form: class-syntax typing.NamedTuple imports ast on 3.14 (PKG-03).
-    _Snapshot = collections.namedtuple("_Snapshot", ["available", "catalogs"])
+    _Snapshot = collections.namedtuple("_Snapshot", ["available", "catalogs", "rules"])
 
 __all__ = ["Localizer", "MissingPolicy"]
 
@@ -92,12 +96,14 @@ class Localizer:
             ``no``, ``off`` or an empty value leave it off (case-insensitive).
             For example ``strict=settings.DEBUG``.
 
-    Slips (a missing key, a missing variable or a plural message without
-    ``count``) are lenient unless strict. Each is logged on the ``locjson``
-    logger at WARNING the first time per ``(kind, locale, key)`` for this
-    Localizer, and at DEBUG afterwards. Records name keys, locales and
-    placeholders, never variable values. Invalid request-time locale tags are
-    logged at DEBUG only, because they come from request input.
+    Slips (a missing key, a missing variable, a plural message without
+    ``count`` or an invalid ``count``) are lenient unless strict. Each is
+    logged on the ``locjson`` logger at WARNING the first time per
+    ``(kind, locale, key)`` for this Localizer, and at DEBUG afterwards.
+    Records name keys, locales, placeholders and the type or problem of an
+    invalid count, never variable or count values. Invalid request-time
+    locale tags are logged at DEBUG only, because they come from request
+    input.
 
     Raises:
         ConfigurationError: If both or neither of ``path`` and ``loader`` are
@@ -166,11 +172,11 @@ class Localizer:
                 f"locales {sorted(available)}"
             )
             raise ConfigurationError(msg)
-        self._snapshot = _Snapshot(available, {})
+        self._snapshot = _Snapshot(available, {}, {})
         if preload:
             with self._lock:
                 catalogs = {tag: self._build(tag) for tag in sorted(available)}
-                self._snapshot = _Snapshot(available, catalogs)
+                self._snapshot = _publish(available, catalogs)
 
     @override
     def __repr__(self) -> str:
@@ -277,7 +283,7 @@ class Localizer:
             targets = available if self._preload else available & loaded.keys()
             catalogs = {tag: self._build(tag) for tag in sorted(targets)}
             # Chains do not depend on availability, so _chains stays valid.
-            self._snapshot = _Snapshot(available, catalogs)
+            self._snapshot = _publish(available, catalogs)
 
     def for_locale(self, locale: str) -> Translator:
         """Return a :class:`~locjson.Translator` bound to ``locale``.
@@ -392,9 +398,18 @@ class Localizer:
             locale: The locale to translate into. Defaults to
                 :attr:`current_locale`. An invalid tag falls back to the
                 default locale.
-            count: The quantity for plural messages. It is also available to
-                templates as ``{count}``. A plural message without ``count``
-                uses its ``other`` form.
+            count: The quantity for plural messages: an ``int``, ``float`` or
+                ``Decimal``. The form follows the CLDR plural rule of the
+                catalog that holds the message, and a ``zero`` form wins for
+                any count equal to 0. ``Decimal`` counts keep their visible
+                fraction digits (``Decimal("1.0")`` is ``other`` in English,
+                ``one`` in Turkish); a float is read through its shortest
+                ``repr``. ``count`` is also available to templates as
+                ``{count}``. A plural message without ``count`` uses its
+                ``other`` form. An invalid count (a ``bool``, a string, NaN,
+                an infinity, any other type, or more than 1000 integer or
+                fraction digits) is a slip: the ``other`` form is used and
+                ``{count}`` stays literal.
             context: Reserved for a future version; must be ``None``.
             **variables: Placeholder values. A placeholder without a value is
                 kept as literal ``{name}`` text.
@@ -408,8 +423,8 @@ class Localizer:
             MissingTranslationError: If the key is missing everywhere and the
                 Localizer is strict or the policy is ``"raise"``.
             InterpolationError: When strict or under ``missing="raise"``, if a
-                placeholder has no value or a plural message is called without
-                ``count``.
+                placeholder has no value, a plural message is called without
+                ``count``, or ``count`` is invalid.
             InvalidCatalogError: If a catalog needed for the lookup is invalid.
         """
         reserved: object = context  # typed None, but callers may pass anything
@@ -420,12 +435,17 @@ class Localizer:
         found = self._find(key, tag)
         if found is None:
             return self._on_missing(key, tag)
-        entry, source = found
+        entry, rule = found
         if count is not None:
+            try:
+                operands = plural_operands(count)
+            except (TypeError, ValueError) as error:
+                # The message names the type or problem, never the value.
+                return self._invalid_count(entry, key, tag, variables, str(error))
             variables["count"] = count
             if isinstance(entry, PluralEntry):
-                # The rules follow the catalog that supplied the entry.
-                entry = select_form(entry, source, count)
+                # The rule follows the catalog that supplied the entry.
+                entry = select_form(entry, operands, rule)
         elif isinstance(entry, PluralEntry):
             return self._without_count(entry, key, tag, variables)
         return entry.render(
@@ -484,7 +504,7 @@ class Localizer:
             chains[tag] = chain
         return chain
 
-    def _find(self, key: str, tag: str) -> tuple[Entry, str] | None:
+    def _find(self, key: str, tag: str) -> tuple[Entry, PluralRule] | None:
         chain = self._chain(tag)
         while True:
             # One snapshot per attempt: never mix catalogs of two generations.
@@ -501,7 +521,8 @@ class Localizer:
                     break
                 entry = catalog.get(key)
                 if entry is not None:
-                    return entry, catalog.locale
+                    # The rule of the same snapshot as the catalog.
+                    return entry, snapshot.rules[candidate]
             else:
                 return None
 
@@ -519,13 +540,46 @@ class Localizer:
             key,
             tag,
         )
+        return self._render_without_count(entry, key, tag, variables)
 
-        def on_missing(key: str, locale: str, name: str) -> None:
-            # The missing count is already reported; other names still are.
-            if name != "count":
-                self._on_variable(key, locale, name)
+    def _invalid_count(
+        self,
+        entry: Entry,
+        key: str,
+        tag: str,
+        variables: dict[str, object],
+        reason: str,
+    ) -> str:
+        # ``reason`` names the count's type or problem; the value may come
+        # from request input and is never logged or put in an error.
+        if self._raises:
+            msg = f"invalid count for key {key!r}: {reason}"
+            raise InterpolationError(key, "count", msg)
+        self._slips.report(
+            "invalid count",
+            tag,
+            key,
+            "locjson: invalid count for key %r in %r (%s); using 'other'",
+            key,
+            tag,
+            reason,
+        )
+        return self._render_without_count(entry, key, tag, variables)
 
-        return entry.other.render(variables, key=key, locale=tag, on_missing=on_missing)
+    def _render_without_count(
+        self, entry: Entry, key: str, tag: str, variables: dict[str, object]
+    ) -> str:
+        # The other form of a plural, or the plain template, with {count}
+        # left literal. Only reached on the lenient slip paths.
+        template = entry.other if isinstance(entry, PluralEntry) else entry
+        return template.render(
+            variables, key=key, locale=tag, on_missing=self._on_variable_but_count
+        )
+
+    def _on_variable_but_count(self, key: str, locale: str, name: str) -> None:
+        # The count slip is already reported; other missing names still are.
+        if name != "count":
+            self._on_variable(key, locale, name)
 
     def _on_missing(self, key: str, tag: str) -> str:
         if self._raises:
@@ -556,8 +610,16 @@ class Localizer:
             if tag in snapshot.available and tag not in snapshot.catalogs:
                 catalog = self._build(tag)
                 self._snapshot = _Snapshot(
-                    snapshot.available, {**snapshot.catalogs, tag: catalog}
+                    snapshot.available,
+                    {**snapshot.catalogs, tag: catalog},
+                    {**snapshot.rules, tag: rule_for(tag)},
                 )
+
+
+def _publish(available: frozenset[str], catalogs: Mapping[str, Catalog]) -> _Snapshot:
+    # The plural rule of each catalog is resolved here, once, at load.
+    rules = {tag: rule_for(tag) for tag in catalogs}
+    return _Snapshot(available, catalogs, rules)
 
 
 def _make_loader(path: str | os.PathLike[str] | None, loader: object) -> Loader:

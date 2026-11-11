@@ -33,7 +33,9 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: true
-      - run: uv sync # project (editable) + default group "dev"
+      # project (editable) + default group "dev" + the babel extra, so mypy and
+      # lint-imports see Babel
+      - run: uv sync --extra babel
       - run: uv run --no-sync ruff check --output-format=github .
       - run: uv run --no-sync ruff format --check .
       - run: uv run --no-sync mypy
@@ -82,9 +84,35 @@ jobs:
       - run: uv sync --no-default-groups --group test
       - run: uv run --no-sync python -m pytest
 
+  # The matrix above stays extras-free (the zero-dependency path); this job
+  # runs the whole suite with the babel extra, and its coverage joins the
+  # combined report.
+  test-babel:
+    name: test (ubuntu-latest, 3.14, babel)
+    runs-on: ubuntu-latest
+    env:
+      COVERAGE_FILE: .coverage.ubuntu-latest-3.14-babel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --extra babel # project + default group "dev" + babel
+      - run: uv run --no-sync coverage run -m pytest
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-data-ubuntu-latest-3.14-babel
+          path: .coverage.*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   coverage:
     name: coverage
-    needs: test
+    needs: [test, test-babel]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

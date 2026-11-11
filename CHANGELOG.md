@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
+CLDR plural rules.
+
+### Added
+
+- CLDR 49 cardinal plural rules for 17 built-in languages (`en`, `tr`, `de`,
+  `fr`, `es`, `it`, `pt`, `nl`, `ru`, `uk`, `pl`, `cs`, `ar`, `he`, `ja`, `zh`,
+  `ko`), plus the separate `pt-PT` rule shared by the locales CLDR groups under
+  it, written as plain Python functions with no rule-string parsing or `eval`.
+  A rule is looked up by exact tag, then by script-aware parents, then by
+  language, and is resolved once per catalog at load.
+- Plural operands per Unicode TR35 (`n`, `i`, `v`, `w`, `f`, `t`) for `int`,
+  `float` and `Decimal` counts. A `Decimal` keeps its visible fraction digits
+  (`Decimal("1.0")` is `other` in English and `one` in Turkish), and a float is
+  read through its shortest `repr`.
+- `categories_for(locale)`, also available as `locjson.plural.categories_for`,
+  returns the plural categories a locale's rule can produce. An invalid tag
+  raises `InvalidLocaleError`.
+- The optional `locjson[babel]` extra gives every other CLDR language Babel's
+  plural rules. Babel is imported lazily, only when a catalog in such a
+  language is loaded, never by `import locjson`. A locale Babel does not know
+  falls back to the one/other rule. Babel compiles CLDR rule text with `eval`
+  on its own bundled data; locjson's code never does.
+- Tests against the pinned CLDR 49 plural samples and against Babel's rules,
+  and a CI job that runs the suite with Babel installed.
+
+### Changed
+
+- Plural forms follow each language's CLDR rule instead of the 0.1 one/other
+  rule. For example, French and Brazilian Portuguese use `one` for 0 and 1.5
+  when the entry has no `zero` form, and Russian picks `few` or `many`. The
+  explicit `zero` form still wins for a count of 0 in every language.
+- Invalid counts (`True`/`False`, strings, NaN, infinities, other types, more
+  than 1000 digits) are now slips: 0.1 treated `True` as 1. The `other` form is
+  used with `{count}` left as literal text, the slip is logged, and strict mode
+  or `missing="raise"` raises `InterpolationError`.
+
 ## [0.1.0] - 2026-11-11
 
 First release: the core runtime.
@@ -67,5 +105,6 @@ First release: the core runtime.
   free-threaded 3.14t job, with combined branch coverage ≥ 90 %.
 - Release workflow that publishes to TestPyPI and PyPI through trusted publishing.
 
-[Unreleased]: https://github.com/fleizean/locjson/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fleizean/locjson/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/fleizean/locjson/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fleizean/locjson/releases/tag/v0.1.0

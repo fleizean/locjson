@@ -1,68 +1,117 @@
 """Choosing the plural form for a count.
 
-0.1.0 ships one resolver, the CLDR default rule (``one`` for 1, ``other``
-otherwise). Per-language rules replace :func:`default_resolver` in a later
-version without changing :func:`select_form` or the catalog format.
+The plural rule of a catalog is found in three steps:
+
+1. The built-in CLDR 49 rules, tried for the exact canonical tag, then for
+   the tag's script-aware parents (:func:`locjson.locale.parents`), then for
+   its language subtag. Built-in languages always use these rules, whether
+   or not Babel is installed.
+2. Babel's CLDR rules, when ``locjson[babel]`` is installed, tried for the
+   same candidates in the same order. The first one Babel knows wins.
+3. Otherwise the one/other rule (``one`` iff ``i = 1 and v = 0``).
+
+Lookups are cached (bounded), and each :class:`~locjson.Localizer` resolves
+the rule once per catalog, at load, so a warm lookup does no Babel work.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypeAlias
+import functools
+from typing import TYPE_CHECKING
+
+from locjson.locale import normalize, parents
+from locjson.plural._babel import babel_rule
+from locjson.plural.rules import BUILTIN_RULES, FALLBACK_RULE
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from decimal import Decimal
-
     from locjson.formatting import Template
     from locjson.plural.categories import PluralEntry
+    from locjson.plural.operands import Operands
+    from locjson.plural.rules import PluralRule, RuleSpec
 
-__all__ = ["PluralResolver", "default_resolver", "select_form"]
-
-PluralResolver: TypeAlias = "Callable[[str, int | float | Decimal], str]"
-"""A function ``(locale, count) -> category name``."""
+__all__ = ["categories_for", "rule_for", "select_form"]
 
 
-def default_resolver(locale: str, count: int | float | Decimal) -> str:  # noqa: ARG001
-    """Apply the CLDR default rule: ``one`` for 1 and -1, ``other`` otherwise.
+def categories_for(locale: str) -> frozenset[str]:
+    """Return the plural categories a locale's plural rule can produce.
 
-    ``1.0`` and ``Decimal("1")`` count as 1. The locale is ignored; it is part
-    of the signature for per-language resolvers.
+    These are the forms a plural entry in that locale may need. The set always
+    contains ``"other"``. The rule is found the same way
+    :meth:`~locjson.Localizer.t` finds it: the built-in CLDR rule, then
+    Babel's rule when ``locjson[babel]`` is installed, then the one/other
+    rule.
+
+    The set is unordered. To list it in CLDR order, sort it with
+    :data:`locjson.plural.categories.CATEGORIES`::
+
+        sorted(categories_for("ar"), key=CATEGORIES.index)
+
+    Example:
+        >>> sorted(categories_for("ru"))
+        ['few', 'many', 'one', 'other']
 
     Args:
-        locale: The canonical locale of the catalog that holds the entry.
-        count: The quantity.
+        locale: A locale tag, in any spelling :func:`locjson.locale.normalize`
+            accepts (``"pt_PT"`` and ``"pt-PT"`` are the same locale).
 
     Returns:
-        ``"one"`` or ``"other"``.
+        The CLDR category names, out of ``zero``, ``one``, ``two``, ``few``,
+        ``many`` and ``other``.
+
+    Raises:
+        InvalidLocaleError: If ``locale`` is not a valid locale tag.
     """
-    return "one" if abs(count) == 1 else "other"
+    return _lookup(normalize(locale))[1]
 
 
-def select_form(
-    entry: PluralEntry,
-    locale: str,
-    count: int | float | Decimal,
-    resolver: PluralResolver = default_resolver,
-) -> Template:
-    """Pick the form of ``entry`` to render for ``count``.
+def rule_for(tag: str) -> PluralRule:
+    """Return the plural rule for a locale.
+
+    Args:
+        tag: A canonical locale tag, as produced by
+            :func:`locjson.locale.normalize`.
+
+    Returns:
+        A function from :class:`~locjson.plural.operands.Operands` to a CLDR
+        plural category name.
+    """
+    return _lookup(tag)[0]
+
+
+@functools.lru_cache(maxsize=256)
+def _lookup(tag: str) -> RuleSpec:
+    language = tag.partition("-")[0]
+    candidates = tuple(dict.fromkeys((tag, *parents(tag), language)))
+    for candidate in candidates:
+        spec = BUILTIN_RULES.get(candidate)
+        if spec is not None:
+            return spec
+    for candidate in candidates:
+        spec = babel_rule(candidate)
+        if spec is not None:
+            return spec
+    return FALLBACK_RULE
+
+
+def select_form(entry: PluralEntry, operands: Operands, rule: PluralRule) -> Template:
+    """Pick the form of ``entry`` to render for a count.
 
     A ``zero`` form wins for a count of zero in every language (the
-    explicit-zero override). Otherwise ``resolver`` names a category, and
-    ``other`` is used when the entry has no form for it.
+    explicit-zero override), without asking the rule. Otherwise ``rule`` names
+    a category, and ``other`` is used when the entry has no form for it.
 
     Args:
         entry: The plural entry.
-        locale: The canonical locale of the catalog that supplied ``entry``,
-            so the rules follow the text actually shown.
-        count: The quantity.
-        resolver: Maps ``(locale, count)`` to a category name.
+        operands: The operands of the count.
+        rule: The plural rule of the catalog that supplied ``entry``, so the
+            rule follows the text actually shown.
 
     Returns:
         The template to render.
     """
-    if count == 0:
+    if operands.n == 0:
         zero = entry.get("zero")
         if zero is not None:
             return zero
-    form = entry.get(resolver(locale, count))
+    form = entry.get(rule(operands))
     return entry.other if form is None else form
