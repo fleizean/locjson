@@ -1,0 +1,11 @@
+{
+  "order": {
+    "thanks": "Thanks for your order, {name}!",
+    "items": {
+      "zero": "Your cart is empty.",
+      "one": "{count} item is on its way.",
+      "other": "{count} items are on their way."
+    },
+    "total": "Total: {amount}"
+  }
+}

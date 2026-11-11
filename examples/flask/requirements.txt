@@ -1,0 +1,4 @@
+# locjson itself is not listed: install it from the repository root with
+# `pip install -e .` (or `pip install "locjson @ git+https://github.com/fleizean/locjson"`).
+flask>=3.0
+pytest>=8.0
