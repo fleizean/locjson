@@ -44,8 +44,9 @@ path = "src/locjson/_version.py"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/locjson", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
-# "README.md" above also matches examples/*/README.md.
-exclude = ["/examples"]
+# "README.md" above also matches examples/*/README.md. The examples stay out of
+# the sdist, and so does the test that runs them.
+exclude = ["/examples", "/tests/test_examples.py"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/locjson"]
