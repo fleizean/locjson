@@ -97,6 +97,12 @@ _IO_AUDIT = IoAudit()
 sys.addaudithook(_IO_AUDIT.hook)
 
 
+@pytest.fixture(autouse=True)
+def _no_strict_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a developer's own ``LOCJSON_STRICT`` out of every test."""
+    monkeypatch.delenv("LOCJSON_STRICT", raising=False)
+
+
 @pytest.fixture
 def io_audit() -> IoAudit:
     """The session-wide filesystem audit, disarmed."""

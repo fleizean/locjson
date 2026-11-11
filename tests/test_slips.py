@@ -75,28 +75,87 @@ def test_found_keys_never_consult_the_policy(sample_catalogs: Catalogs) -> None:
     assert l10n.t("only_en", locale="tr") == "English only"
 
 
-def test_each_missing_key_logs_one_debug_record(
+def _levels(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.levelname for record in _records(caplog)]
+
+
+def test_missing_key_warns_once_then_logs_debug(
     sample_catalogs: Catalogs, caplog: pytest.LogCaptureFixture
 ) -> None:
     l10n = _l10n(sample_catalogs)
     with caplog.at_level(logging.DEBUG, logger="locjson"):
         l10n.t("nope", locale="tr")
-    records = _records(caplog)
-    assert len(records) == 1
-    assert records[0].levelno == logging.DEBUG
-    message = records[0].getMessage()
+        l10n.t("nope", locale="tr")
+    assert _levels(caplog) == ["WARNING", "DEBUG"]
+    message = _records(caplog)[0].getMessage()
+    assert "missing key" in message
     assert "'nope'" in message
     assert "'tr'" in message
 
 
-def test_slips_log_nothing_at_warning_or_above(
+def test_a_new_key_locale_or_kind_warns_again(
     sample_catalogs: Catalogs, caplog: pytest.LogCaptureFixture
 ) -> None:
     l10n = _l10n(sample_catalogs)
-    with caplog.at_level(logging.WARNING):
-        l10n.t("nope")
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        l10n.t("nope")  # missing key in en
+        l10n.t("nope", locale="tr")  # another locale
+        l10n.t("nope2")  # another key
+        l10n.t("greeting")  # another kind: missing variable
         l10n.t("greeting")
+        l10n.t("inbox.messages")  # missing count
         l10n.t("inbox.messages")
+    assert _levels(caplog) == [
+        "WARNING",
+        "WARNING",
+        "WARNING",
+        "WARNING",
+        "DEBUG",
+        "WARNING",
+        "DEBUG",
+    ]
+
+
+def test_dedupe_is_per_localizer(
+    sample_catalogs: Catalogs, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        _l10n(sample_catalogs).t("nope")
+        _l10n(sample_catalogs).t("nope")
+    assert _levels(caplog) == ["WARNING", "WARNING"]
+
+
+def test_dedupe_store_is_bounded_fifo(
+    sample_catalogs: Catalogs, caplog: pytest.LogCaptureFixture
+) -> None:
+    l10n = _l10n(sample_catalogs)
+    for index in range(1100):
+        l10n.t(f"missing.{index}")
+    assert len(l10n._slips._seen) <= 1024
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        l10n.t("missing.0")  # evicted first, so it warns again
+        l10n.t("missing.1099")  # still remembered
+    assert _levels(caplog) == ["WARNING", "DEBUG"]
+
+
+def test_invalid_request_locale_never_warns(
+    sample_catalogs: Catalogs, caplog: pytest.LogCaptureFixture
+) -> None:
+    l10n = _l10n(sample_catalogs)
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        for _ in range(3):
+            assert l10n.t("nav.home", locale="../../etc") == "Home"
+    assert _levels(caplog) == ["DEBUG", "DEBUG", "DEBUG"]
+
+
+def test_warm_lookups_log_nothing(
+    sample_catalogs: Catalogs, caplog: pytest.LogCaptureFixture
+) -> None:
+    l10n = _l10n(sample_catalogs)
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        l10n.t("greeting", name="Enes")
+        l10n.t("inbox.messages", locale="tr", count=2)
+        l10n.t("nav.home", locale="pt-BR")
     assert _records(caplog) == []
 
 
@@ -108,11 +167,27 @@ def test_missing_variable_keeps_the_placeholder(
 ) -> None:
     l10n = _l10n(sample_catalogs)
     with caplog.at_level(logging.DEBUG, logger="locjson"):
-        assert l10n.t("greeting") == "Hello, {name}!"
+        assert l10n.t("greeting", locale="tr") == "Merhaba, {name}!"
     records = _records(caplog)
     assert len(records) == 1
-    assert "'name'" in records[0].getMessage()
-    assert "'greeting'" in records[0].getMessage()
+    message = records[0].getMessage()
+    assert "missing variable" in message
+    assert "'name'" in message
+    assert "'greeting'" in message
+    assert "'tr'" in message
+
+
+def test_missing_variable_record_names_the_variable_not_other_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    l10n = _l10n({"en": {"card": "{who} paid {amount}"}})
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        l10n.t("card", who="Ayşe Yılmaz")
+    (record,) = _records(caplog)
+    assert "'amount'" in record.getMessage()
+    assert "Ayşe" not in record.getMessage()
+    assert record.args is not None
+    assert "Ayşe Yılmaz" not in repr(record.args)
 
 
 def test_missing_variable_raises_under_raise(sample_catalogs: Catalogs) -> None:
@@ -145,8 +220,9 @@ def test_plural_without_count_uses_other(
     with caplog.at_level(logging.DEBUG, logger="locjson"):
         text = l10n.t("inbox.messages")
     assert text == "You have {count} messages"
-    messages = [record.getMessage() for record in _records(caplog)]
-    assert any("without count" in message for message in messages)
+    (record,) = _records(caplog)
+    assert "missing count" in record.getMessage()
+    assert "'inbox.messages'" in record.getMessage()
 
 
 def test_plural_without_count_raises_under_raise(sample_catalogs: Catalogs) -> None:

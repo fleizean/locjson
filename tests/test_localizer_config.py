@@ -13,10 +13,12 @@ import pytest
 from locjson import (
     ConfigurationError,
     DictLoader,
+    InterpolationError,
     InvalidCatalogError,
     InvalidLocaleError,
     Localizer,
     LocJsonError,
+    MissingTranslationError,
 )
 from locjson import locale as locale_module
 from locjson import localizer as localizer_module
@@ -280,3 +282,109 @@ def test_concurrent_lookups_with_valid_and_invalid_tags(
         thread.join()
     assert failures == []
     assert len(l10n._chains) <= localizer_module._CHAIN_CACHE_MAX
+
+
+# --- strict switch (RT-09) -----------------------------------------------------------
+
+
+def _strict(catalogs: Catalogs, **options: Any) -> Localizer:
+    return Localizer(loader=DictLoader(catalogs), **options)
+
+
+def test_strict_true_makes_every_slip_raise(sample_catalogs: Catalogs) -> None:
+    l10n = _strict(sample_catalogs, strict=True)
+    assert l10n.strict is True
+    with pytest.raises(MissingTranslationError):
+        l10n.t("nope")
+    with pytest.raises(InterpolationError) as info:
+        l10n.t("greeting")
+    assert info.value.name == "name"
+    with pytest.raises(InterpolationError) as plural:
+        l10n.t("inbox.messages")
+    assert plural.value.name == "count"
+    assert l10n.t("greeting", name="Enes") == "Hello, Enes!"
+
+
+@pytest.mark.parametrize("missing", ["key", "empty", lambda key, locale: "?"])
+def test_strict_overrides_the_missing_policy(
+    sample_catalogs: Catalogs, missing: Any
+) -> None:
+    with pytest.raises(MissingTranslationError):
+        _strict(sample_catalogs, strict=True, missing=missing).t("nope")
+
+
+def test_strict_false_keeps_the_default_lenient(sample_catalogs: Catalogs) -> None:
+    l10n = _strict(sample_catalogs, strict=False)
+    assert l10n.strict is False
+    assert l10n.t("nope") == "nope"
+    assert l10n.t("greeting") == "Hello, {name}!"
+    assert l10n.t("inbox.messages") == "You have {count} messages"
+
+
+def test_strict_false_does_not_weaken_missing_raise(sample_catalogs: Catalogs) -> None:
+    l10n = _strict(sample_catalogs, strict=False, missing="raise")
+    assert l10n.strict is False
+    with pytest.raises(MissingTranslationError):
+        l10n.t("nope")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        (" Yes ", True),
+        ("ON", True),
+        ("", False),
+        ("0", False),
+        ("False", False),
+        ("no", False),
+        (" off ", False),
+    ],
+)
+def test_strict_reads_locjson_strict_when_omitted(
+    sample_catalogs: Catalogs,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    *,
+    expected: bool,
+) -> None:
+    monkeypatch.setenv("LOCJSON_STRICT", value)
+    assert _strict(sample_catalogs).strict is expected
+
+
+def test_strict_defaults_to_false_without_the_variable(
+    sample_catalogs: Catalogs,
+) -> None:
+    assert _strict(sample_catalogs).strict is False
+
+
+def test_explicit_strict_wins_over_the_environment(
+    sample_catalogs: Catalogs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCJSON_STRICT", "1")
+    assert _strict(sample_catalogs, strict=False).strict is False
+    monkeypatch.setenv("LOCJSON_STRICT", "maybe")
+    assert _strict(sample_catalogs, strict=True).strict is True
+
+
+def test_environment_is_read_once_at_construction(
+    sample_catalogs: Catalogs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    l10n = _strict(sample_catalogs)
+    monkeypatch.setenv("LOCJSON_STRICT", "1")
+    assert l10n.strict is False
+    assert l10n.t("nope") == "nope"
+
+
+def test_invalid_locjson_strict_is_a_configuration_error(
+    sample_catalogs: Catalogs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCJSON_STRICT", "maybe")
+    with pytest.raises(ConfigurationError, match="LOCJSON_STRICT"):
+        _strict(sample_catalogs)
+
+
+def test_strict_must_be_a_bool_or_none(sample_catalogs: Catalogs) -> None:
+    with pytest.raises(ConfigurationError, match="strict="):
+        _strict(sample_catalogs, strict="false")
