@@ -197,6 +197,6 @@ def test_rtl_tables_are_the_cldr_49_extracts() -> None:
     assert {"Arab", "Hebr", "Thaa", "Syrc", "Nkoo", "Adlm", "Rohg"} <= (
         locale.RTL_SCRIPTS
     )
-    assert locale.RTL_LANGUAGES == frozenset(
-        "ar bal ckb dv fa he ks lrc mzn nqo ps sd syr ug ur yi".split()
-    )
+    rtl_languages = {"ar", "bal", "ckb", "dv", "fa", "he", "ks", "lrc"}
+    rtl_languages |= {"mzn", "nqo", "ps", "sd", "syr", "ug", "ur", "yi"}
+    assert rtl_languages == locale.RTL_LANGUAGES
