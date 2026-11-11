@@ -21,6 +21,7 @@ __all__ = ["Template", "TemplateError", "compile_template"]
 
 _FORMATTER = string.Formatter()
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_POSITIONAL = re.compile(r"[0-9]*")
 _MISSING = object()
 _LITERAL_HINT = "use '{{' and '}}' for literal braces"
 
@@ -110,8 +111,17 @@ class Template:
 def compile_template(text: str) -> Template:
     """Compile catalog text into a :class:`Template`.
 
-    Placeholders must be plain ASCII identifiers such as ``{name}``. Doubled
-    braces (``{{`` and ``}}``) produce literal braces.
+    Placeholders must be plain ASCII identifiers such as ``{name}`` or
+    ``{_count2}``. Doubled braces (``{{`` and ``}}``) produce literal braces.
+
+    Notes:
+        - ``{a:}`` is treated exactly like ``{a}``: :meth:`string.Formatter.parse`
+          reports an empty format spec the same way as no spec, and an empty
+          spec carries no risk.
+        - Placeholder names are ASCII-only in 0.1.0, so Turkish names such as
+          ``{İsim}`` are rejected. Python NFKC-normalizes keyword argument
+          names, so some non-ASCII names could never be filled through
+          ``**vars``. Allowing more names later is a non-breaking change.
 
     Args:
         text: The raw catalog string.
@@ -120,9 +130,11 @@ def compile_template(text: str) -> Template:
         The compiled template.
 
     Raises:
-        TemplateError: For unbalanced braces, conversions (``{x!r}``), format
-            specs (``{x:>10}``), and placeholder names that are not plain ASCII
-            identifiers (``{0}``, ``{a.b}``, ``{a[0]}``, ``{}``).
+        TemplateError: With one message per kind of problem: unbalanced
+            braces, a conversion (``{x!r}``), a format spec (``{x:>10}``), a
+            positional or empty placeholder (``{0}``, ``{}``), or a name that
+            is not a plain ASCII identifier (``{a.b}``, ``{a[0]}``,
+            ``{ name }``, ``{İsim}``).
     """
     try:
         parsed = list(_FORMATTER.parse(text))
@@ -148,10 +160,16 @@ def compile_template(text: str) -> Template:
                 f"{_LITERAL_HINT}"
             )
             raise TemplateError(msg)
+        if _POSITIONAL.fullmatch(field):
+            msg = (
+                f"positional or empty placeholder {{{field}}} is not allowed; "
+                f"use a name like {{name}}, or {_LITERAL_HINT}"
+            )
+            raise TemplateError(msg)
         if not _NAME.fullmatch(field):
             msg = (
-                f"placeholder {{{field}}} must be a plain name like {{name}}; "
-                f"{_LITERAL_HINT}"
+                f"placeholder {{{field}}} must be a plain ASCII name like "
+                f"{{name}}; {_LITERAL_HINT}"
             )
             raise TemplateError(msg)
         segments.append("".join(literal))
