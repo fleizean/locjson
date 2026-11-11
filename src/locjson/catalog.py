@@ -251,7 +251,7 @@ def build_catalog(locale: str, sources: Sequence[RawSource]) -> BuildResult:
 class _Builder:
     """Mutable state of one :func:`build_catalog` run."""
 
-    __slots__ = ("entries", "groups", "issues", "locale", "meta", "places")
+    __slots__ = ("entries", "issues", "locale", "meta", "places")
 
     def __init__(self, locale: str) -> None:
         self.locale = locale
@@ -261,8 +261,6 @@ class _Builder:
         self.places: dict[str, list[tuple[str, str]]] = {}
         # $meta field -> (value, origin, pointer) of its first declaration.
         self.meta: dict[str, tuple[str, str, str]] = {}
-        # Flat prefixes of objects marked "$plural": false (plural detection).
-        self.groups: set[str] = set()
 
     def issue(
         self,
@@ -325,7 +323,7 @@ class _Builder:
             if _SURROGATE.search(raw_key):
                 self.issue(origin, child, "lone surrogate in key")
             elif raw_key.startswith("$"):
-                self.reserved(raw_key, value, prefix, child, origin, top=depth == 1)
+                self.reserved(raw_key, value, child, origin, top=depth == 1)
             elif self.valid_key(raw_key, child, origin):
                 self.node(prefix + raw_key, value, child, origin, depth)
 
@@ -353,7 +351,7 @@ class _Builder:
             name = str(raw_key)
             if name.startswith("$"):
                 child = f"{pointer}/{_token(name)}"
-                self.reserved(name, value, key + ".", child, origin, top=False)
+                self.reserved(name, value, child, origin, top=False)
             else:
                 forms[name] = value
         bad = [name for name in CATEGORIES if not isinstance(forms.get(name, ""), str)]
@@ -410,7 +408,6 @@ class _Builder:
         self,
         key: str,
         value: object,
-        prefix: str,
         pointer: str,
         origin: str,
         *,
@@ -422,11 +419,9 @@ class _Builder:
             else:
                 problem = "$meta is only allowed at the top level of a file"
                 self.issue(origin, pointer, problem)
-        elif key == "$plural":
-            if value is False:
-                self.groups.add(prefix[:-1])
-            else:
-                self.issue(origin, pointer, "$plural only accepts false")
+        elif key == "$plural" and value is not False:
+            # false itself is read by _is_plural() before the object is walked.
+            self.issue(origin, pointer, "$plural only accepts false")
         # Any other "$" key is an annotation: skipped, value not validated.
 
     def read_meta(self, meta: object, pointer: str, origin: str) -> None:
