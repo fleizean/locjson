@@ -1,0 +1,13 @@
+{
+  "home": {
+    "title": "Welcome to the bakery",
+    "greeting": "Hello, {name}!"
+  },
+  "cart": {
+    "items": {
+      "zero": "Your basket is empty",
+      "one": "{count} loaf in your basket",
+      "other": "{count} loaves in your basket"
+    }
+  }
+}

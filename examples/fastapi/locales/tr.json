@@ -1,0 +1,13 @@
+{
+  "home": {
+    "title": "Fırınımıza hoş geldiniz",
+    "greeting": "Merhaba, {name}!"
+  },
+  "cart": {
+    "items": {
+      "zero": "Sepetiniz boş",
+      "one": "Sepetinizde {count} somun var",
+      "other": "Sepetinizde {count} somun var"
+    }
+  }
+}
