@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import functools
 import re
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 from locjson.errors import InvalidLocaleError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
 __all__ = ["fallback_chain", "normalize", "parents"]
 
@@ -281,3 +281,24 @@ def fallback_chain(
     if default not in seen:
         chain.append(default)
     return tuple(chain)
+
+
+MAX_HEADER_LENGTH: Final = 4096
+MAX_HEADER_PIECES: Final = 64
+MAX_HEADER_ITEMS: Final = 32
+RTL_SCRIPTS: Final[frozenset[str]] = frozenset()
+RTL_LANGUAGES: Final[frozenset[str]] = frozenset()
+
+
+def negotiate(
+    accept_language: str | None, available: Iterable[str], default: str
+) -> str:
+    """Stub: always returns the default (TDD RED)."""
+    del accept_language, available
+    return normalize(default)
+
+
+def direction(locale: str) -> Literal["ltr", "rtl"]:
+    """Stub: always returns ``"ltr"`` (TDD RED)."""
+    del locale
+    return "ltr"
