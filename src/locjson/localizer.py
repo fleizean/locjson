@@ -565,14 +565,19 @@ class Localizer:
         if self._raises:
             msg = f"invalid count for key {key!r}: {reason}"
             raise InterpolationError(key, "count", msg)
+        # Only a plural entry has an 'other' form; a plain one is rendered
+        # as is, with {count} left literal.
+        plural = isinstance(entry, PluralEntry)
+        outcome = "using 'other'" if plural else "{count} left literal"
         self._slips.report(
             "invalid count",
             tag,
             key,
-            "locjson: invalid count for key %r in %r (%s); using 'other'",
+            "locjson: invalid count for key %r in %r (%s); %s",
             key,
             tag,
             reason,
+            outcome,
         )
         return self._render_without_count(entry, key, tag, variables)
 

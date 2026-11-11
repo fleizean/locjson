@@ -208,7 +208,20 @@ def test_invalid_count_on_a_plain_entry(caplog: pytest.LogCaptureFixture) -> Non
     messages = [record.getMessage() for record in _records(caplog)]
     assert len(messages) == 1
     assert "invalid count" in messages[0]
+    # IN-04: a plain entry has no 'other' form to use.
+    assert "other" not in messages[0]
+    assert messages[0].endswith("; {count} left literal")
     assert not any("missing variable" in message for message in messages)
+
+
+def test_invalid_count_on_a_plural_entry_says_other_is_used(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="locjson"):
+        assert _l10n().t("x", count="3") == "other {count}"  # type: ignore[arg-type]
+    messages = [record.getMessage() for record in _records(caplog)]
+    assert len(messages) == 1
+    assert messages[0].endswith("; using 'other'")
 
 
 @pytest.mark.parametrize(
