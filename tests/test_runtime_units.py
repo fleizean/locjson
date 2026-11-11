@@ -449,7 +449,9 @@ def test_fallbacks_serve_parent_text(make_locales_dir: MakeLocalesDir) -> None:
     assert l10n.t("only_en", locale="pt-BR") == "English only"
     single = Localizer(root, fallbacks={"pt-BR": "pt"})
     assert single.t("nav.home", locale="pt-BR") == "Início"
-    assert Localizer(root).t("nav.home", locale="pt-BR") == "Home"
+    # Script-aware truncation reaches pt without explicit fallbacks (LOC-03).
+    assert Localizer(root).t("nav.home", locale="pt-BR") == "Início"
+    assert Localizer(root).t("nav.home", locale="de-AT") == "Home"
 
 
 def test_unknown_or_invalid_request_locale_uses_default(
