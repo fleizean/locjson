@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
-from locjson import InvalidLocaleError, locale
+from locjson import DictLoader, InvalidLocaleError, Localizer, locale
 from locjson.locale import (
     MAX_HEADER_ITEMS,
     MAX_HEADER_LENGTH,
@@ -200,3 +200,138 @@ def test_rtl_tables_are_the_cldr_49_extracts() -> None:
     rtl_languages = {"ar", "bal", "ckb", "dv", "fa", "he", "ks", "lrc"}
     rtl_languages |= {"mzn", "nqo", "ps", "sd", "syr", "ug", "ur", "yi"}
     assert rtl_languages == locale.RTL_LANGUAGES
+
+
+# --- Localizer.direction: $meta only from same-language, same-script catalogs ---
+
+
+def _localizer(
+    catalogs: dict[str, dict[str, Any]],
+    *,
+    default_locale: str = "en",
+    fallbacks: dict[str, list[str]] | None = None,
+) -> Localizer:
+    return Localizer(
+        loader=DictLoader(catalogs),
+        default_locale=default_locale,
+        fallbacks=fallbacks,
+    )
+
+
+def test_rtl_locales_never_inherit_the_default_locales_ltr_meta() -> None:
+    l10n = _localizer(
+        {"en": {"$meta": {"direction": "ltr"}, "a": "A"}, "ar": {"a": "x"}}
+    )
+    assert (l10n.direction("ar"), l10n.direction("he")) == ("rtl", "rtl")
+    assert l10n.direction("en") == "ltr"
+
+
+def test_an_ltr_locale_never_inherits_the_default_locales_rtl_meta() -> None:
+    l10n = _localizer(
+        {"ar": {"$meta": {"direction": "rtl"}, "a": "x"}, "tr": {"a": "y"}},
+        default_locale="ar",
+    )
+    assert l10n.direction("tr") == "ltr"
+    assert l10n.direction("de") == "ltr"
+
+
+def test_explicit_fallbacks_to_another_language_are_ignored() -> None:
+    l10n = _localizer(
+        {"en": {"a": "A"}, "fa": {"$meta": {"direction": "ltr"}, "a": "x"}},
+        fallbacks={"ur": ["fa"], "tr": ["fa"]},
+    )
+    assert l10n.direction("ur") == "rtl"
+    assert l10n.direction("tr") == "ltr"
+
+
+@pytest.mark.parametrize("declared", ["ltr", "rtl"])
+def test_a_regional_locale_inherits_its_language_meta(
+    declared: Literal["ltr", "rtl"],
+) -> None:
+    l10n = _localizer({"en": {"a": "A"}, "ar": {"$meta": {"direction": declared}}})
+    assert l10n.direction("ar-EG") == declared
+
+
+def test_a_locale_without_any_matching_meta_uses_the_table() -> None:
+    l10n = _localizer({"en": {"$meta": {"direction": "ltr"}, "a": "A"}})
+    assert l10n.direction("he") == "rtl"
+    assert l10n.direction("he-IL") == "rtl"
+    assert l10n.direction("pa-Arab") == "rtl"
+
+
+def test_a_script_locale_uses_the_meta_of_the_same_script() -> None:
+    l10n = _localizer(
+        {
+            "en": {"a": "A"},
+            "zh": {"$meta": {"direction": "rtl"}},
+            "zh-Hant": {"$meta": {"direction": "ltr"}},
+        }
+    )
+    assert l10n.direction("zh-Hant-TW") == "ltr"
+    assert l10n.direction("zh-TW") == "ltr"
+    # zh-CN -> zh-Hans -> zh: Hans is zh's likely script, so zh's $meta counts.
+    assert l10n.direction("zh-CN") == "rtl"
+    assert l10n.direction("zh-Hans") == "rtl"
+
+
+def test_another_script_of_the_same_language_is_ignored() -> None:
+    meta: dict[str, Any] = {"$meta": {"direction": "rtl"}, "a": "x"}
+    l10n = _localizer({"sr": meta}, default_locale="sr")
+    assert l10n.direction("sr-Latn") == "ltr"
+    assert l10n.direction("sr-Cyrl") == "rtl"
+    assert l10n.direction("sr-RS") == "rtl"
+    by_fallback = _localizer(
+        {"en": {"a": "A"}, "sr": meta}, fallbacks={"sr-Latn": ["sr"]}
+    )
+    assert by_fallback.direction("sr-Latn") == "ltr"
+
+
+def test_the_locales_own_meta_wins_over_its_parents() -> None:
+    l10n = _localizer(
+        {
+            "en": {"$meta": {"direction": "ltr"}, "a": "A"},
+            "ar": {"$meta": {"direction": "rtl"}},
+            "ar-EG": {"$meta": {"direction": "ltr"}},
+        }
+    )
+    assert l10n.direction("ar-EG") == "ltr"
+    assert l10n.direction("ar-SA") == "rtl"
+
+
+def test_the_first_matching_meta_along_the_chain_wins() -> None:
+    l10n = _localizer(
+        {
+            "en": {"a": "A"},
+            "ar-EG": {"a": "x"},
+            "ar": {"$meta": {"direction": "ltr"}},
+        }
+    )
+    assert l10n.direction("ar-EG") == "ltr"
+
+
+def test_mismatched_catalogs_are_not_loaded() -> None:
+    l10n = _localizer({"en": {"$meta": {"direction": "ltr"}, "a": "A"}})
+    assert l10n.direction("ar") == "rtl"
+    assert "en" not in l10n._snapshot.catalogs
+
+
+def test_an_explicit_script_never_uses_the_meta_of_a_script_less_catalog() -> None:
+    l10n = _localizer({"en": {"a": "A"}, "ar": {"$meta": {"direction": "rtl"}}})
+    assert l10n.direction("ar-Latn") == "ltr"
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        ("ar", ("ar", None)),
+        ("ar-EG", ("ar", None)),
+        ("ar-Latn", ("ar", "Latn")),
+        ("sr", ("sr", "Cyrl")),
+        ("sr-Latn-RS", ("sr", "Latn")),
+        ("zh-TW", ("zh", "Hant")),
+        ("zh-Hant-TW", ("zh", "Hant")),
+        ("zh", ("zh", "Hans")),
+    ],
+)
+def test_writing_system(tag: str, expected: tuple[str, str | None]) -> None:
+    assert locale._writing_system(tag) == expected

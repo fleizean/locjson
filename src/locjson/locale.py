@@ -263,6 +263,31 @@ def _without_likely_script(tag: str) -> str | None:
     return "-".join([language, *([region] if region else []), *variants])
 
 
+def _writing_system(tag: str) -> tuple[str, str | None]:
+    """Return the language and effective script of a canonical tag.
+
+    The script is the explicit script subtag, else the script the region
+    implies (``zh-TW`` gives ``Hant``), else the language's likely script
+    (``sr`` gives ``Cyrl``). A language without a likely-script entry and no
+    script subtag gives ``None``. Internal: :meth:`Localizer.direction` uses
+    it to take ``$meta.direction`` only from catalogs written in the same
+    language and script as the requested locale.
+
+    Args:
+        tag: A canonical locale tag.
+
+    Returns:
+        ``(language, script)``, for example ``("zh", "Hant")`` for
+        ``"zh-Hant-TW"`` and ``("ar", None)`` for ``"ar-EG"``.
+    """
+    language, script, region, _ = _split(tag)
+    if script is None and region is not None:
+        script = _REGION_SCRIPT.get((language, region))
+    if script is None:
+        script = _LIKELY_SCRIPT.get(language)
+    return language, script
+
+
 def fallback_chain(
     tag: str, fallbacks: Mapping[str, Sequence[str]], default: str
 ) -> tuple[str, ...]:
