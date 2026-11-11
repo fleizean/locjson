@@ -13,7 +13,8 @@ First release: the core runtime.
 
 ### Added
 
-- `Localizer(path, *, loader, default_locale, fallbacks, missing, preload)` with
+- `Localizer(path, *, loader, default_locale, fallbacks, missing, preload, strict)`
+  (or just `Localizer("locales")`) with
   `t(key, /, *, locale, count, context, **vars)`, `has()`, `locales`,
   `default_locale` and `current_locale`. A warm `t()` is a dictionary lookup
   plus a join of precompiled segments, with no file I/O.
@@ -35,6 +36,14 @@ First release: the core runtime.
   `zero` form that wins for a count of 0 in every language, a one/other rule
   and `"$plural": false` to opt out.
 - The `missing` policy (`"key"`, `"empty"`, `"raise"` or a callable).
+- `strict=` on `Localizer` and `setup()`: `True` makes every slip raise, and
+  `None` (the default) reads the `LOCJSON_STRICT` environment variable once, at
+  construction. The result is exposed as `Localizer.strict`.
+- Slip logging on the `locjson` logger: WARNING the first time per kind, locale
+  and key, DEBUG afterwards, never with variable values.
+- Bound translators: `Localizer.for_locale()` and `Localizer.scope()` (and
+  `locjson.for_locale()` / `locjson.scope()`) return an immutable, composable
+  `Translator` with a bound locale, a key prefix or both.
 - A current locale per Localizer in a `ContextVar`, set with `use()` (a context
   manager) or `set_locale()`, and isolated across asyncio tasks and threads.
 - `reload()`, which rebuilds the loaded catalogs and swaps them in atomically,

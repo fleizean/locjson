@@ -36,7 +36,7 @@ locjson keeps translations in **plain JSON** on the backend too, and focuses on 
 - **Small, typed runtime.** Zero runtime dependencies, ships `py.typed`, checked with `mypy --strict`.
 - **Fast warm path.** Catalogs are loaded lazily per locale, validated once and compiled at load. A warm `t()` call is a dict lookup plus a join, with no file I/O.
 - **Safe by construction.** Only named `{name}` placeholders. No attribute or index access, no format specs, no `eval`.
-- **Loud at load, quiet at render.** Broken catalogs raise at load time with the file path and a JSON pointer. Translation slips at render time are lenient by default, or strict with `missing="raise"`.
+- **Loud at load, quiet at render.** Broken catalogs raise at load time with the file path and a JSON pointer. Translation slips at render time are lenient by default and logged once at WARNING, or raise with `strict=True`.
 - **Tooling included** *(planned)*. A `locjson` CLI to check, format, sync and measure your catalogs in CI and pre-commit.
 
 ## Features
@@ -49,7 +49,9 @@ locjson keeps translations in **plain JSON** on the backend too, and focuses on 
 | Safe `{name}` interpolation with `{{` / `}}` escapes | 0.1 |
 | Plural entries with explicit `zero` and a one/other rule | 0.1 |
 | Current locale via `contextvars` (`use()` / `set_locale()`), safe across asyncio tasks and threads | 0.1 |
-| `missing` policy, `LocJsonError` hierarchy with file path + JSON pointer | 0.1 |
+| Bound translators: `for_locale()` for jobs and e-mails, `scope()` for key prefixes | 0.1 |
+| `missing` policy, `strict=` / `LOCJSON_STRICT`, WARNING-once slip logging | 0.1 |
+| `LocJsonError` hierarchy with file path + JSON pointer | 0.1 |
 | `reload()`, `negotiate()` (Accept-Language), `direction()` (LTR/RTL) | 0.1 |
 | Custom loaders via a `Loader` protocol, in-memory `DictLoader` | 0.1 |
 | CLDR plural rules for 17 built-in languages, optional Babel for the rest | planned 0.2 |
@@ -118,20 +120,13 @@ Then create a `Localizer` and translate:
 ```python
 from locjson import Localizer
 
-l10n = Localizer(
-    path="locales",
-    default_locale="en",
-    fallbacks={"pt-BR": ["pt"]},
-    missing="key",  # "key" | "raise" | "empty" | callable(key, locale) -> str
-)
+l10n = Localizer("locales")  # default_locale="en"
 
 print(l10n.t("greeting", name="Enes"))               # -> Hello, Enes!
 print(l10n.t("greeting", locale="tr", name="Enes"))  # -> Merhaba, Enes!
 print(l10n.t("inbox.messages", count=0))             # -> You have no messages
 print(l10n.t("inbox.messages", count=1))             # -> You have 1 message
 print(l10n.t("inbox.messages", count=3))             # -> You have 3 messages
-print(l10n.t("nav.home", locale="pt-BR"))            # -> Home
-print(l10n.t("nav.profile"))                         # -> nav.profile
 print(l10n.has("nav.home", locale="tr"))             # -> True
 print(sorted(l10n.locales))                          # -> ['en', 'tr']
 
@@ -139,14 +134,128 @@ with l10n.use("tr"):
     print(l10n.t("nav.home"))                        # -> Ana sayfa
     print(l10n.t("inbox.messages", count=3))         # -> 3 mesajınız var
 
-# Or use the module-level default localizer:
-import locjson
+# The same Localizer with its options spelled out:
+l10n = Localizer(
+    path="locales",
+    default_locale="en",
+    fallbacks={"pt-BR": ["pt"]},
+    missing="key",  # "key" | "empty" | "raise" | callable(key, locale) -> str
+)
 
-locjson.setup(path="locales", default_locale="en")
-print(locjson.t("greeting", name="Enes"))            # -> Hello, Enes!
+print(l10n.t("nav.home", locale="pt-BR"))            # -> Home
+print(l10n.t("nav.profile"))                         # -> nav.profile
 ```
 
-`pt-BR` has no catalog here, so the lookup walks `pt-BR → pt → en` and returns the English text. `nav.profile` exists nowhere, so `missing="key"` returns the key itself.
+`Localizer("locales")` is the short form: `path` is the first argument and `default_locale` is `"en"`. `pt-BR` has no catalog here, so the lookup walks `pt-BR → pt → en` and returns the English text. `nav.profile` exists nowhere, so `missing="key"` returns the key itself.
+
+## Use cases
+
+The examples below use the `locales/` folder and the `l10n` from the quick start.
+
+### Web requests (FastAPI)
+
+Pick the locale per request from the `Accept-Language` header. Each request runs in its own context, so concurrent requests never see each other's locale.
+
+<!-- no-exec -->
+```python
+from fastapi import FastAPI, Request
+
+from locjson import Localizer
+
+app = FastAPI()
+l10n = Localizer("locales")
+
+
+@app.middleware("http")
+async def locale_from_header(request: Request, call_next):
+    with l10n.use(l10n.negotiate(request.headers.get("accept-language", ""))):
+        return await call_next(request)
+
+
+@app.get("/")
+async def home() -> dict[str, str]:
+    return {"title": l10n.t("nav.home")}  # "Ana sayfa" for Accept-Language: tr
+```
+
+Prefer `use()` to `set_locale()` here. `use()` puts the previous locale back when the block ends, while a `set_locale()` value stays for whatever runs later in the same context, for example the next job on a reused worker thread.
+
+### E-mails and background jobs
+
+Outside a request there is no current locale to rely on. `for_locale()` returns a translator bound to one locale. It never reads or changes the current locale, which suits Celery tasks, cron jobs and e-mails sent in a user's language.
+
+<!-- exec -->
+```python
+def welcome_subject(user_name: str, user_language: str) -> str:
+    t = l10n.for_locale(user_language)
+    return t("greeting", name=user_name)
+
+
+print(welcome_subject("Yağız", "tr"))                # -> Merhaba, Yağız!
+print(welcome_subject("Ada", "de"))                  # -> Hello, Ada!
+```
+
+`de` has no catalog, so it falls back to `en`. An invalid tag binds `default_locale`, and an explicit `locale=` argument still wins over the bound locale.
+
+### One module, one key prefix
+
+`scope()` prepends a prefix to every key. It combines with `for_locale()` in either order.
+
+<!-- exec -->
+```python
+inbox = l10n.scope("inbox")
+print(inbox("messages", count=2))                    # -> You have 2 messages
+print(inbox.for_locale("tr")("messages", count=0))   # -> Hiç mesajınız yok
+
+nav_tr = l10n.for_locale("tr").scope("nav")
+print(nav_tr("settings"))                            # -> Ayarlar
+print(nav_tr.has("profile"))                         # -> False
+```
+
+Translators are immutable and safe to share between threads and tasks. They always use the Localizer's latest catalogs, its `missing` policy and its `strict` setting.
+
+### Scripts and CLI tools
+
+For a small program, install one default Localizer and use the module-level functions.
+
+<!-- exec -->
+```python
+import locjson
+
+locjson.setup("locales")
+
+print(locjson.t("greeting", name="Enes"))            # -> Hello, Enes!
+with locjson.use("tr"):
+    print(locjson.t("nav.settings"))                 # -> Ayarlar
+```
+
+`locjson.has()`, `set_locale()`, `for_locale()`, `scope()` and `get_localizer()` work the same way. Calling `setup()` again replaces the default atomically.
+
+### Tests
+
+Build catalogs in memory with `DictLoader` and turn on `strict=True`, so a typo in a key or a missing variable fails the test instead of passing quietly.
+
+<!-- exec -->
+```python
+import pytest
+
+from locjson import DictLoader, Localizer, MissingTranslationError
+
+
+def make_l10n() -> Localizer:
+    return Localizer(
+        loader=DictLoader({"en": {"greeting": "Hello, {name}!"}}),
+        strict=True,
+    )
+
+
+def test_greeting() -> None:
+    assert make_l10n().t("greeting", name="Enes") == "Hello, Enes!"
+
+
+def test_a_typo_fails_loudly() -> None:
+    with pytest.raises(MissingTranslationError):
+        make_l10n().t("greting", name="Enes")
+```
 
 ## JSON file format
 
@@ -210,7 +319,7 @@ Placeholders are **named fields only**, compiled once when the catalog loads:
 
 Format values in Python before passing them in, for example `t("total", price=f"{price:.2f}")`.
 
-If a variable is not passed, the placeholder stays as literal `{name}` text and a debug record is logged on the `locjson` logger. With `missing="raise"`, an `InterpolationError` is raised instead.
+If a variable is not passed, the placeholder stays as literal `{name}` text and the slip is logged (see [Logging](#logging)). With `strict=True` or `missing="raise"`, an `InterpolationError` is raised instead.
 
 ## Locales and fallback
 
@@ -231,19 +340,23 @@ Invalid tags raise `InvalidLocaleError` when passed to the constructor. At reque
 
 The current locale lives in a `ContextVar` per `Localizer`, so each asyncio task and thread sees its own value.
 
+<!-- exec -->
 ```python
-with l10n.use("tr"):        # scoped: the previous locale is restored on exit
-    l10n.t("nav.home")      # "Ana sayfa"
+with l10n.use("tr"):                # scoped: the previous locale comes back on exit
+    print(l10n.t("nav.home"))       # -> Ana sayfa
 
-l10n.set_locale("tr")       # for the current context, e.g. one request
-l10n.current_locale         # "tr"
+l10n.set_locale("tr")               # for the rest of the current context
+print(l10n.current_locale)          # -> tr
 ```
 
 ### Negotiation and text direction
 
+`negotiate()` picks the best discovered locale for an `Accept-Language` header and falls back to `default_locale`. Malformed headers never raise. `direction()` returns the first `$meta.direction` along the locale's chain, otherwise a built-in table decides.
+
+<!-- exec -->
 ```python
-l10n.negotiate("tr-TR,tr;q=0.9,en;q=0.8")  # "tr" (best match from Accept-Language)
-l10n.direction("ar")                       # "rtl"
+print(l10n.negotiate("tr-TR,tr;q=0.9,en;q=0.8"))     # -> tr
+print(l10n.direction("ar"))                          # -> rtl
 ```
 
 ### Missing translations
@@ -252,10 +365,26 @@ l10n.direction("ar")                       # "rtl"
 |---|---|
 | `"key"` (default) | Returns the key, e.g. `"nav.profile"` |
 | `"empty"` | Returns `""` |
-| `"raise"` | Raises `MissingTranslationError`, and makes missing variables and a missing `count` raise too |
+| `"raise"` | Raises `MissingTranslationError`, and makes missing variables and a missing `count` raise `InterpolationError` |
 | `callable(key, locale)` | Returns whatever your function returns |
 
-Every slip is logged at DEBUG level on the `locjson` logger, so you can surface them in development without noise in production.
+### Strict mode
+
+`strict=True` makes every slip raise, whatever `missing` says: a missing key raises `MissingTranslationError`, and a missing variable or a plural message without `count` raises `InterpolationError`.
+
+With `strict=None` (the default), the Localizer reads the `LOCJSON_STRICT` environment variable once, when it is created. `1`, `true`, `yes` and `on` turn strict mode on, and `0`, `false`, `no`, `off` and an empty value leave it off (case-insensitive). Any other value raises `ConfigurationError`. The result is available as `l10n.strict`.
+
+The usual setup is strict in development and lenient in production, either with `Localizer("locales", strict=settings.DEBUG)` or from the environment:
+
+```bash
+LOCJSON_STRICT=1 pytest
+```
+
+### Logging
+
+Lenient slips (a missing key, a missing variable, a plural message without `count`) are logged on the `locjson` logger. The first time a slip of a given kind happens for a locale and key, it is logged at WARNING. Repeats are logged at DEBUG, so a missing key shows up once instead of on every request. Records name the key, the locale and the placeholder, never the values you pass in.
+
+Invalid locale tags at request time, for example from an `Accept-Language` header, are logged at DEBUG only.
 
 ### Errors
 
@@ -263,16 +392,17 @@ All exceptions inherit from `LocJsonError`:
 
 | Exception | Raised when |
 |---|---|
-| `ConfigurationError` | The `Localizer` is misconfigured, e.g. neither `path` nor `loader` is given |
+| `ConfigurationError` | The `Localizer` is misconfigured, e.g. neither `path` nor `loader` is given, or `LOCJSON_STRICT` holds an unknown value |
 | `InvalidLocaleError` | A locale tag in the configuration is invalid |
 | `InvalidCatalogError` | A catalog file is invalid. Exposes `.path` and `.pointer` (RFC 6901). |
-| `MissingTranslationError` | A key is missing under `missing="raise"`. Also a `LookupError`. |
-| `InterpolationError` | A variable or `count` is missing under `missing="raise"` |
+| `MissingTranslationError` | A key is missing in strict mode or under `missing="raise"`. Also a `LookupError`. |
+| `InterpolationError` | A variable or `count` is missing in strict mode or under `missing="raise"` |
 
 ### Custom loaders
 
 Catalogs can come from anywhere that implements the `Loader` protocol (`discover_locales()` and `load(locale)`). An in-memory loader is included, which is handy for tests:
 
+<!-- exec -->
 ```python
 from locjson import DictLoader, Localizer
 
@@ -280,9 +410,12 @@ l10n = Localizer(
     loader=DictLoader({"en": {"greeting": "Hello, {name}!"}}),
     default_locale="en",
 )
+print(l10n.t("greeting", name="Enes"))               # -> Hello, Enes!
 ```
 
-Call `l10n.reload()` to rebuild all catalogs. The new set is swapped in atomically, and if a file is broken the old catalogs stay in place.
+### Reloading
+
+Call `l10n.reload()` to rebuild the loaded catalogs. The new set is swapped in atomically. If a file is broken, the error is raised and the old catalogs stay in place. Locales that were never loaded are read later, from the files as they are when first needed.
 
 ## CLI *(planned 0.3 / 0.4)*
 

@@ -7,11 +7,23 @@ README.md marks its executable parts with HTML comments:
 - ``<!-- quickstart -->`` before the Python quick start. The test runs it in
   ``tmp_path`` and compares every printed line with the ``# -> <expected>``
   comment on the ``print`` line, in order.
+- ``<!-- exec -->`` before every other runnable Python snippet. Each one runs
+  in a copy of the quick start's namespace and in a copy of the current
+  context, so a ``set_locale()`` in one snippet cannot leak into the next. Its
+  output is checked like the quick start's, and every ``test_*`` function it
+  defines is called.
+- ``<!-- no-exec -->`` before a snippet that needs a third-party framework
+  (FastAPI). It is only parsed with :func:`ast.parse`.
+
+Every Python fence carries one of these markers, so a new README example
+cannot go untested.
 """
 
 from __future__ import annotations
 
+import ast
 import contextlib
+import contextvars
 import io
 import re
 from pathlib import Path
@@ -121,10 +133,9 @@ def test_fence_parser_reads_markers_and_expectations() -> None:
     assert _expected_lines(blocks[1].code) == ["1", "2"]
 
 
-def test_readme_quickstart_runs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    blocks = _readme_blocks()
+def _run_quickstart(
+    blocks: list[Block], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, object]:
     written = _write_catalogs(blocks, tmp_path)
     assert written == ["locales/en.json", "locales/tr.json"]
     quickstart = [block for block in blocks if block.marker == "quickstart"]
@@ -134,13 +145,68 @@ def test_readme_quickstart_runs(
     expected = _expected_lines(code)
     assert "Hello, Enes!" in expected
 
+    monkeypatch.delenv("LOCJSON_STRICT", raising=False)
     monkeypatch.chdir(tmp_path)
-    printed = _run(code, {"__name__": "readme_quickstart"})
+    namespace: dict[str, object] = {"__name__": "readme_quickstart"}
+    printed = _run(code, namespace)
 
     assert printed == expected
+    return namespace
+
+
+def _run_snippet(code: str, base: dict[str, object]) -> list[str]:
+    namespace = dict(base)
+    before = set(namespace)
+    printed = _run(code, namespace)
+    for name in sorted(set(namespace) - before):
+        test = namespace[name]
+        if name.startswith("test_") and callable(test):
+            test()
+    return printed
+
+
+def test_readme_quickstart_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run_quickstart(_readme_blocks(), tmp_path, monkeypatch)
+
+
+def test_every_python_fence_is_marked() -> None:
+    markers = [block.marker for block in _readme_blocks() if block.lang == "python"]
+    assert markers
+    assert all(m in {"quickstart", "exec", "no-exec"} for m in markers), markers
+
+
+def test_readme_snippets_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    blocks = _readme_blocks()
+    base = _run_quickstart(blocks, tmp_path, monkeypatch)
+    snippets = [block.code for block in blocks if block.marker == "exec"]
+    assert len(snippets) >= 5
+
+    for code in snippets:
+        locjson._DEFAULT.localizer = None
+        printed = contextvars.copy_context().run(_run_snippet, code, base)
+        assert printed == _expected_lines(code), code
+
+
+def test_readme_snippet_tests_are_called() -> None:
+    calls: list[str] = []
+    code = "def test_one():\n    calls.append('one')\nprint('x')  # -> x\n"
+    printed = _run_snippet(code, {"calls": calls})
+    assert printed == ["x"]
+    assert calls == ["one"]
+
+
+def test_framework_snippets_parse() -> None:
+    snippets = [block.code for block in _readme_blocks() if block.marker == "no-exec"]
+    assert snippets
+    for code in snippets:
+        ast.parse(code)
+    assert any('@app.middleware("http")' in code for code in snippets)
 
 
 def test_readme_is_utf8_without_email_addresses() -> None:
     text = README.read_text(encoding="utf-8")
     assert "ı" in text
+    assert "Yağız" in text
     assert re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text) is None
