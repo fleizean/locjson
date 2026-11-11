@@ -541,6 +541,8 @@ def test_empty_catalog_is_cached(sample_catalogs: Catalogs) -> None:
 
 def test_cold_load_rechecks_snapshot_under_lock(sample_catalogs: Catalogs) -> None:
     l10n = Localizer(loader=DictLoader(sample_catalogs))
-    first = l10n._catalog("tr")
+    l10n._load("tr")
+    first = l10n._snapshot.catalogs["tr"]
     # A second cold path (as a racing thread would take) reuses the published catalog.
-    assert l10n._catalog("tr") is first
+    l10n._load("tr")
+    assert l10n._snapshot.catalogs["tr"] is first

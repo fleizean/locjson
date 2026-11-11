@@ -15,6 +15,7 @@ from locjson import (
     Localizer,
     RawSource,
 )
+from locjson._compat import override
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
@@ -246,6 +247,7 @@ class _ReloadingChain(tuple[str, ...]):
     action: Callable[[], None] | None = None
     at = ""
 
+    @override
     def __iter__(self) -> Iterator[str]:
         for tag in tuple.__iter__(self):
             if tag == self.at and self.action is not None:

@@ -238,6 +238,45 @@ class Localizer:
         with self._context.use(tag):
             yield self._default if tag is None else tag
 
+    def reload(self) -> None:
+        """Re-discover the locales and rebuild every loaded catalog, atomically.
+
+        Discovery runs again, so added locales appear and removed ones
+        disappear from :attr:`locales`. Every catalog loaded so far (every
+        locale with ``preload=True``) is rebuilt from its files. Locales that
+        were never loaded stay lazy.
+
+        The swap is all or nothing. Everything is built first, and only when
+        every catalog is valid does the new set replace the old one, in a
+        single assignment. Each lookup reads one consistent set, so a
+        concurrent ``t()`` sees either the old catalogs or the new ones, never
+        a mix. When anything fails, the error propagates and lookups keep
+        serving the previous catalogs.
+
+        Locales that were never loaded are read when first needed, from the
+        files as they are then.
+
+        Raises:
+            InvalidCatalogError: If a discovered name is not a valid locale tag
+                or a rebuilt catalog is invalid (for example a half-written
+                file).
+            ConfigurationError: If the catalog directory is gone, or
+                ``default_locale`` is no longer among the discovered locales.
+        """
+        with self._lock:
+            available = frozenset(self._loader.discover_locales())
+            if self._default not in available:
+                msg = (
+                    f"default_locale {self._default!r} is no longer among the "
+                    f"discovered locales {sorted(available)}"
+                )
+                raise ConfigurationError(msg)
+            loaded = self._snapshot.catalogs
+            targets = available if self._preload else available & loaded.keys()
+            catalogs = {tag: self._build(tag) for tag in sorted(targets)}
+            # Chains do not depend on availability, so _chains stays valid.
+            self._snapshot = _Snapshot(available, catalogs)
+
     def t(
         self,
         key: str,
@@ -349,17 +388,25 @@ class Localizer:
         return chain
 
     def _find(self, key: str, tag: str) -> tuple[Entry, str] | None:
-        snapshot = self._snapshot
-        for candidate in self._chain(tag):
-            if candidate not in snapshot.available:
-                continue
-            catalog = snapshot.catalogs.get(candidate)
-            if catalog is None:
-                catalog = self._catalog(candidate)
-            entry = catalog.get(key)
-            if entry is not None:
-                return entry, catalog.locale
-        return None
+        chain = self._chain(tag)
+        while True:
+            # One snapshot per attempt: never mix catalogs of two generations.
+            snapshot = self._snapshot
+            catalogs = snapshot.catalogs
+            for candidate in chain:
+                if candidate not in snapshot.available:
+                    continue
+                catalog = catalogs.get(candidate)
+                if catalog is None:
+                    # Restart from the snapshot that _load published, which
+                    # may also hold a reload's newer catalogs.
+                    self._load(candidate)
+                    break
+                entry = catalog.get(key)
+                if entry is not None:
+                    return entry, catalog.locale
+            else:
+                return None
 
     def _without_count(
         self, entry: PluralEntry, key: str, tag: str, variables: dict[str, object]
@@ -402,16 +449,18 @@ class Localizer:
     def _build(self, tag: str) -> Catalog:
         return build_catalog(tag, self._loader.load(tag)).unwrap()
 
-    def _catalog(self, tag: str) -> Catalog:
+    def _load(self, tag: str) -> None:
+        # Builds into the *current* snapshot, and only a locale it still
+        # lists: each caller restarts afterwards, so every restart either adds
+        # a catalog or observes a newer generation. A failed build publishes
+        # nothing, so the next attempt builds again.
         with self._lock:
             snapshot = self._snapshot
-            catalog = snapshot.catalogs.get(tag)
-            if catalog is None:
+            if tag in snapshot.available and tag not in snapshot.catalogs:
                 catalog = self._build(tag)
                 self._snapshot = _Snapshot(
                     snapshot.available, {**snapshot.catalogs, tag: catalog}
                 )
-            return catalog
 
 
 def _make_loader(path: str | os.PathLike[str] | None, loader: object) -> Loader:
