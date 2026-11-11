@@ -22,7 +22,7 @@ from locjson.errors import (
     MissingTranslationError,
 )
 from locjson.loaders.filesystem import FilesystemLoader
-from locjson.locale import fallback_chain, normalize
+from locjson.locale import _writing_system, fallback_chain, normalize
 from locjson.plural.categories import PluralEntry
 from locjson.plural.operands import plural_operands
 from locjson.plural.resolver import rule_for, select_form
@@ -349,10 +349,17 @@ class Localizer:
     def direction(self, locale: str | None = None) -> Literal["ltr", "rtl"]:
         """Return the text direction of a locale.
 
-        The catalogs along the locale's fallback chain are checked first, in
-        order, and the first ``$meta.direction`` found wins. When none
-        declares one, the built-in table of :func:`locjson.direction` decides
-        for the requested locale.
+        ``$meta.direction`` describes the script a catalog is written in, so
+        only catalogs in the same language and script as the requested
+        locale count. The fallback chain is walked in order, skipping every
+        catalog of another language or script, and the first
+        ``$meta.direction`` found wins: ``ar-EG`` uses the one in ``ar`` and
+        ``zh-Hant-TW`` the one in ``zh-Hant``, but ``ar`` never uses the one
+        in ``en`` and ``sr-Latn`` never the one in ``sr`` (Cyrillic). The
+        script is the explicit script subtag, else the one the region
+        implies, else the language's likely script. When no such catalog
+        declares a direction, the built-in table of :func:`locjson.direction`
+        decides for the requested locale.
 
         Args:
             locale: A locale tag. Defaults to :attr:`current_locale`; an
@@ -365,7 +372,12 @@ class Localizer:
             InvalidCatalogError: If a catalog that has to be loaded is invalid.
         """
         tag = self._resolve_locale(locale)
-        chain = self._chain(tag)
+        writing_system = _writing_system(tag)
+        chain = [
+            candidate
+            for candidate in self._chain(tag)
+            if _writing_system(candidate) == writing_system
+        ]
         while True:
             snapshot = self._snapshot  # one snapshot per attempt, as in _find
             for candidate in chain:

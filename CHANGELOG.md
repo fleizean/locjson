@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tags that spell out the language's likely script, such as `pt-Latn-PT` and
   `pt-Latn-AO`, got the Brazilian Portuguese rule instead of the `pt-PT` one.
   The rule lookup now also tries each tag without its likely script.
+- `Localizer.direction()` took the first `$meta.direction` anywhere along the
+  fallback chain, so a `"direction": "ltr"` in the default locale's catalog
+  made every locale that falls back to it, `ar` and `he` included, `ltr`.
+  `$meta.direction` is now taken only from catalogs in the same language and
+  script as the requested locale (`ar-EG` still uses `ar`'s, `zh-Hant-TW`
+  uses `zh-Hant`'s, `sr-Latn` never uses `sr`'s); without one, the built-in
+  table decides for the requested locale.
 
 ## [0.2.0] - 2026-11-11
 
