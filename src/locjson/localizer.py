@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import contextlib
 import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 from locjson import _log
 from locjson._compat import override
 from locjson.catalog import build_catalog
+from locjson.context import LocaleContext
 from locjson.errors import (
     ConfigurationError,
     InterpolationError,
@@ -24,6 +26,7 @@ from locjson.plural.categories import PluralEntry
 from locjson.plural.resolver import select_form
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from decimal import Decimal
     from typing import NamedTuple
 
@@ -109,6 +112,7 @@ class Localizer:
 
     __slots__ = (
         "_chains",
+        "_context",
         "_default",
         "_fallbacks",
         "_loader",
@@ -150,6 +154,7 @@ class Localizer:
         self._fallbacks = _normalize_fallbacks(fallbacks)
         self._preload = preload
         self._lock = threading.Lock()
+        self._context = LocaleContext()
         # Canonical tag -> fallback chain. Cleared when full (bounded, A8).
         self._chains: dict[str, tuple[str, ...]] = {}
         available = frozenset(self._loader.discover_locales())
@@ -184,6 +189,55 @@ class Localizer:
         """Whether every slip raises, as resolved at construction."""
         return self._strict
 
+    @property
+    def current_locale(self) -> str:
+        """The locale of the current context, or ``default_locale`` if none is set.
+
+        It is set with :meth:`use` or :meth:`set_locale` and is private to this
+        Localizer and to the current asyncio task or thread.
+        """
+        current = self._context.get()
+        return self._default if current is None else current
+
+    def set_locale(self, locale: str) -> None:
+        """Set the current locale for the rest of the current context.
+
+        The value is per context: it applies to the calling asyncio task or
+        thread only, from now until it ends or the locale is set again. Prefer
+        :meth:`use` in code that runs on a reused worker (a thread pool), since
+        a value set here stays in that worker's context.
+
+        Args:
+            locale: A locale tag such as ``"tr"`` or ``"pt_BR"``. An invalid tag
+                clears the current locale, so lookups use ``default_locale``,
+                and is logged at DEBUG.
+        """
+        self._context.set(self._canonical(locale))
+
+    @contextlib.contextmanager
+    def use(self, locale: str) -> Iterator[str]:
+        """Use ``locale`` as the current locale inside a ``with`` block.
+
+        On exit the previous current locale is restored, including when the
+        block raises. Blocks nest, and the value is private to the current
+        asyncio task or thread.
+
+        Example:
+            >>> with l10n.use("tr"):  # doctest: +SKIP
+            ...     l10n.t("nav.home")
+            'Ana Sayfa'
+
+        Args:
+            locale: A locale tag. An invalid tag means ``default_locale`` inside
+                the block and is logged at DEBUG.
+
+        Yields:
+            The canonical locale in effect inside the block.
+        """
+        tag = self._canonical(locale)
+        with self._context.use(tag):
+            yield self._default if tag is None else tag
+
     def t(
         self,
         key: str,
@@ -199,8 +253,9 @@ class Localizer:
         Args:
             key: A flat dot key such as ``"nav.home"``. Keys are compared
                 exactly, with no case folding or Unicode normalization.
-            locale: The locale to translate into. Defaults to the default
-                locale. An invalid tag falls back to the default locale.
+            locale: The locale to translate into. Defaults to
+                :attr:`current_locale`. An invalid tag falls back to the
+                default locale.
             count: The quantity for plural messages. It is also available to
                 templates as ``{count}``. A plural message without ``count``
                 uses its ``other`` form.
@@ -254,8 +309,9 @@ class Localizer:
 
         Args:
             key: A flat dot key.
-            locale: The locale whose chain is searched. Defaults to the
-                default locale; an invalid tag falls back to it.
+            locale: The locale whose chain is searched. Defaults to
+                :attr:`current_locale`; an invalid tag falls back to the
+                default locale.
 
         Returns:
             ``True`` if a translation exists.
@@ -266,15 +322,21 @@ class Localizer:
         return self._find(key, self._resolve_locale(locale)) is not None
 
     def _resolve_locale(self, locale: str | None) -> str:
+        # Explicit locale= first, then the current context, then the default.
         if locale is None:
-            return self._default
+            current = self._context.get()
+            return self._default if current is None else current
+        tag = self._canonical(locale)
+        return self._default if tag is None else tag
+
+    def _canonical(self, locale: str) -> str | None:
         try:
             return normalize(locale)
         except InvalidLocaleError:
             # Request tags are attacker-controlled: log a truncated repr only.
             shown = str(locale)[:_TAG_LOG_LIMIT]
             _log.debug("locjson: invalid locale tag %r; using %r", shown, self._default)
-            return self._default
+            return None
 
     def _chain(self, tag: str) -> tuple[str, ...]:
         chains = self._chains
