@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, TypeVar, overload
 
 from locjson._compat import override
 from locjson._jsonio import JsonObject, NonFinite, escape_pointer_token
-from locjson.errors import CatalogIssue, InvalidCatalogError
+from locjson.errors import CatalogIssue, InvalidCatalogError, InvalidLocaleError
 from locjson.formatting import Template, TemplateError, compile_template
+from locjson.locale import normalize
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -39,6 +40,8 @@ MAX_DEPTH = 32
 
 _T = TypeVar("_T")
 _SURROGATE = re.compile("[\ud800-\udfff]")
+_DIRECTIONS = ("ltr", "rtl")
+_RESERVED = frozenset({"$meta", "$plural"})
 
 
 class Meta:
@@ -183,51 +186,112 @@ class BuildResult(_BuildResultFields):
 def build_catalog(locale: str, sources: Sequence[RawSource]) -> BuildResult:
     """Validate raw documents and compile them into one catalog.
 
-    Nested objects become dot keys (``{"nav": {"home": ...}}`` gives
-    ``"nav.home"``). Empty strings and ``null`` mean "untranslated" and are not
-    stored. Keys starting with ``$`` are reserved and never become
-    translations. Every string is compiled once, here, so lookups never parse
-    text.
+    The rules, which freeze the catalog file format:
+
+    - Each document's top level must be a JSON object. Nested objects become
+      dot keys (``{"nav": {"home": ...}}`` gives ``"nav.home"``), and a
+      literal key may contain dots itself (``{"nav.home": ...}``). Key
+      segments must not be empty, and only the first segment of a literal key
+      may start with ``$``. A namespaced source prefixes its keys with
+      ``<namespace>.``.
+    - Keys starting with ``$`` are reserved and never become translations.
+      ``$meta`` is allowed only at the top level of a file and may hold only
+      ``locale`` (equal to ``locale`` after normalization) and ``direction``
+      (``"ltr"`` or ``"rtl"``); values are merged across the locale's sources
+      and must agree. ``$plural`` accepts only ``false``. Every other ``$`` key
+      is an annotation (``$comment``) and is skipped, value included.
+    - Leaves must be strings or ``null``. ``""`` and ``null`` mean
+      "untranslated" and are not stored, so lookups fall through to the next
+      locale. Every other string is compiled once, here, so lookups never
+      parse text. Keys and values are kept exactly as decoded, with no
+      Unicode normalization.
+    - The same flat key may not be defined twice, and a translation may not
+      also be the prefix of another key (``a.b`` and ``a.b.c``). Both
+      locations are named in the issue.
+    - Duplicate JSON keys, ``NaN``/``Infinity``, lone surrogates and objects
+      nested deeper than :data:`MAX_DEPTH` levels are errors.
 
     This function is pure and never raises for catalog content: problems are
-    collected as issues with RFC 6901 pointers.
+    collected as issues with RFC 6901 pointers. The result does not depend on
+    the order of ``sources`` or of keys within them.
 
     Args:
         locale: The canonical locale the documents belong to.
         sources: The locale's documents.
 
     Returns:
-        The catalog, or ``None`` with every issue found.
+        The catalog and no issues, or ``None`` and every issue found, sorted by
+        ``(path, pointer, problem)``. A partial catalog is never returned.
     """
     builder = _Builder(locale)
-    for source in sources:
-        data = source.data
-        if not isinstance(data, Mapping):
-            problem = f"expected a JSON object at the top level, got {_kind(data)}"
-            builder.issue(source.origin, "", problem)
-            continue
-        prefix = source.namespace + "." if source.namespace else ""
-        builder.walk(data, prefix, "", source.origin)
+    for source in sorted(sources, key=lambda source: source.origin):
+        builder.add(source)
+    builder.check_keys()
     if builder.issues:
         issues = sorted(
             builder.issues, key=lambda issue: (issue.path, issue.pointer, issue.problem)
         )
         return BuildResult(None, tuple(issues))
-    return BuildResult(Catalog(locale, builder.entries), ())
+    return BuildResult(Catalog(locale, builder.entries, builder.merged_meta()), ())
 
 
 class _Builder:
     """Mutable state of one :func:`build_catalog` run."""
 
-    __slots__ = ("entries", "issues", "locale")
+    __slots__ = ("entries", "groups", "issues", "locale", "meta", "places")
 
     def __init__(self, locale: str) -> None:
         self.locale = locale
         self.entries: dict[str, Template] = {}
         self.issues: list[CatalogIssue] = []
+        # Flat key -> every (origin, pointer) that defines it, for collisions.
+        self.places: dict[str, list[tuple[str, str]]] = {}
+        # $meta field -> (value, origin, pointer) of its first declaration.
+        self.meta: dict[str, tuple[str, str, str]] = {}
+        # Flat prefixes of objects marked "$plural": false (plural detection).
+        self.groups: set[str] = set()
 
-    def issue(self, origin: str, pointer: str, problem: str) -> None:
-        self.issues.append(CatalogIssue(origin, pointer, problem, self.locale))
+    def issue(
+        self,
+        origin: str,
+        pointer: str,
+        problem: str,
+        other: tuple[str, str] | None = None,
+    ) -> None:
+        other_path, other_pointer = other if other is not None else (None, None)
+        self.issues.append(
+            CatalogIssue(
+                origin, pointer, problem, self.locale, other_path, other_pointer
+            )
+        )
+
+    def add(self, source: RawSource) -> None:
+        data = source.data
+        if not isinstance(data, Mapping):
+            problem = f"expected a JSON object at the top level, got {_kind(data)}"
+            self.issue(source.origin, "", problem)
+            return
+        prefix = source.namespace + "." if source.namespace else ""
+        self.walk(data, prefix, "", source.origin, 1)
+
+    def merged_meta(self) -> Meta:
+        locale = self.meta.get("locale")
+        direction = self.meta.get("direction")
+        return Meta(
+            locale[0] if locale is not None else None,
+            direction[0] if direction is not None else None,
+        )
+
+    def duplicates(
+        self, node: Mapping[object, object], pointer: str, origin: str
+    ) -> None:
+        if not isinstance(node, JsonObject):
+            return
+        for key in dict.fromkeys(node.duplicates):
+            if key.startswith("$") and key not in _RESERVED:
+                continue  # repeated annotations such as "$comment" are fine
+            child = f"{pointer}/{_token(key)}"
+            self.issue(origin, child, f"duplicate key '{_safe(key)}'")
 
     def walk(
         self,
@@ -235,12 +299,9 @@ class _Builder:
         prefix: str,
         pointer: str,
         origin: str,
-        depth: int = 1,
+        depth: int,
     ) -> None:
-        if isinstance(node, JsonObject):
-            for duplicate in dict.fromkeys(node.duplicates):
-                child = f"{pointer}/{_token(duplicate)}"
-                self.issue(origin, child, f"duplicate key '{_safe(duplicate)}'")
+        self.duplicates(node, pointer, origin)
         for raw_key, value in node.items():
             if not isinstance(raw_key, str):
                 token = escape_pointer_token(str(raw_key))
@@ -250,17 +311,128 @@ class _Builder:
             child = f"{pointer}/{_token(raw_key)}"
             if _SURROGATE.search(raw_key):
                 self.issue(origin, child, "lone surrogate in key")
-                continue
-            if raw_key.startswith("$"):
-                continue
-            key = prefix + raw_key
-            if not isinstance(value, Mapping):
-                self.leaf(key, value, child, origin)
-            elif depth >= MAX_DEPTH:
-                problem = f"nesting deeper than {MAX_DEPTH} levels"
-                self.issue(origin, child, problem)
+            elif raw_key.startswith("$"):
+                self.reserved(raw_key, value, prefix, child, origin, top=depth == 1)
+            elif self.valid_key(raw_key, child, origin):
+                self.node(prefix + raw_key, value, child, origin, depth)
+
+    def node(
+        self, key: str, value: object, pointer: str, origin: str, depth: int
+    ) -> None:
+        if not isinstance(value, Mapping):
+            self.places.setdefault(key, []).append((origin, pointer))
+            self.leaf(key, value, pointer, origin)
+        elif depth >= MAX_DEPTH:
+            problem = f"nesting deeper than {MAX_DEPTH} levels"
+            self.issue(origin, pointer, problem)
+        else:
+            self.walk(value, key + ".", pointer, origin, depth + 1)
+
+    def valid_key(self, key: str, pointer: str, origin: str) -> bool:
+        segments = key.split(".")
+        if "" in segments:
+            self.issue(origin, pointer, f"empty key segment in key '{key}'")
+            return False
+        for segment in segments[1:]:
+            if segment.startswith("$"):
+                problem = (
+                    f"key segment '{segment}' in key '{key}' starts with '$', "
+                    "which is reserved"
+                )
+                self.issue(origin, pointer, problem)
+                return False
+        return True
+
+    def reserved(
+        self,
+        key: str,
+        value: object,
+        prefix: str,
+        pointer: str,
+        origin: str,
+        *,
+        top: bool,
+    ) -> None:
+        if key == "$meta":
+            if top:
+                self.read_meta(value, pointer, origin)
             else:
-                self.walk(value, key + ".", child, origin, depth + 1)
+                problem = "$meta is only allowed at the top level of a file"
+                self.issue(origin, pointer, problem)
+        elif key == "$plural":
+            if value is False:
+                self.groups.add(prefix[:-1])
+            else:
+                self.issue(origin, pointer, "$plural only accepts false")
+        # Any other "$" key is an annotation: skipped, value not validated.
+
+    def read_meta(self, meta: object, pointer: str, origin: str) -> None:
+        if not isinstance(meta, Mapping):
+            self.issue(origin, pointer, f"$meta must be an object, got {_kind(meta)}")
+            return
+        self.duplicates(meta, pointer, origin)
+        for field, value in meta.items():
+            child = f"{pointer}/{_token(str(field))}"
+            if field == "locale":
+                checked = self.meta_locale(value, child, origin)
+            elif field == "direction":
+                checked = self.meta_direction(value, child, origin)
+            else:
+                problem = (
+                    f"unknown $meta key '{_safe(str(field))}'; "
+                    "only 'locale' and 'direction' are allowed"
+                )
+                self.issue(origin, child, problem)
+                continue
+            if checked is not None:
+                self.merge_meta(str(field), checked, child, origin)
+
+    def meta_locale(self, value: object, pointer: str, origin: str) -> str | None:
+        if not isinstance(value, str):
+            problem = f"$meta.locale must be a string, got {_kind(value)}"
+            self.issue(origin, pointer, problem)
+            return None
+        try:
+            tag = normalize(value)
+        except InvalidLocaleError:
+            self.issue(origin, pointer, "$meta.locale is not a valid locale tag")
+            return None
+        if tag != self.locale:
+            problem = f"$meta.locale does not match the file's locale '{self.locale}'"
+            self.issue(origin, pointer, problem)
+            return None
+        return tag
+
+    def meta_direction(self, value: object, pointer: str, origin: str) -> str | None:
+        if isinstance(value, str) and value in _DIRECTIONS:
+            return value
+        self.issue(origin, pointer, "$meta.direction must be 'ltr' or 'rtl'")
+        return None
+
+    def merge_meta(self, field: str, value: str, pointer: str, origin: str) -> None:
+        first = self.meta.setdefault(field, (value, origin, pointer))
+        if first[0] != value:
+            problem = f"$meta.{field} '{value}' conflicts with '{first[0]}'"
+            self.issue(origin, pointer, problem, (first[1], first[2]))
+
+    def check_keys(self) -> None:
+        places = self.places
+        for key, found in places.items():
+            first, *others = sorted(found)
+            for origin, pointer in others:
+                problem = f"key '{key}' is defined more than once"
+                self.issue(origin, pointer, problem, first)
+            dot = key.find(".")
+            while dot != -1:
+                parent = key[:dot]
+                if parent in places:
+                    origin, pointer = first
+                    problem = (
+                        f"key '{key}' is nested under '{parent}', "
+                        "which is a translation"
+                    )
+                    self.issue(origin, pointer, problem, min(places[parent]))
+                dot = key.find(".", dot + 1)
 
     def leaf(self, key: str, value: object, pointer: str, origin: str) -> None:
         if isinstance(value, str):

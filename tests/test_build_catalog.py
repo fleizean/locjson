@@ -415,13 +415,13 @@ def _messy(order: Sequence[str]) -> dict[str, object]:
 
 def test_issues_are_sorted_regardless_of_key_and_source_order() -> None:
     keys = ["n", "a.b", "a", "", "z", "t"]
-    first = _build(_src(_messy(keys)), _src({"n": True}, "de.json"))
-    second = _build(_src({"n": True}, "de.json"), _src(_messy(keys[::-1])))
+    first = _build(_src(_messy(keys)), _src({"flag": True}, "de.json"))
+    second = _build(_src({"flag": True}, "de.json"), _src(_messy(keys[::-1])))
     assert first.issues == second.issues
     paths_pointers = [(i.path, i.pointer, i.problem) for i in first.issues]
     assert paths_pointers == sorted(paths_pointers)
     assert [i.pointer for i in first.issues] == [
-        "/n",
+        "/flag",
         "/",
         "/a/b",
         "/a/f",
