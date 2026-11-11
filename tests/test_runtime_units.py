@@ -465,14 +465,14 @@ def test_unknown_or_invalid_request_locale_uses_default(
 
 def test_count_is_available_as_placeholder(make_locales_dir: MakeLocalesDir) -> None:
     l10n = Localizer(make_locales_dir())
-    assert l10n.t("inbox.messages.other", count=3) == "You have 3 messages"
+    assert l10n.t("inbox.messages", count=3) == "You have 3 messages"
     assert l10n.t("greeting", name="{count}", count=2) == "Hello, {count}!"
 
 
 def test_turkish_text_round_trips(make_locales_dir: MakeLocalesDir) -> None:
     l10n = Localizer(make_locales_dir(), default_locale="tr")
     assert l10n.t("city") == "İstanbul'da ılık bir akşam"
-    assert l10n.t("inbox.messages.zero") == "Hiç mesajınız yok"
+    assert l10n.t("inbox.messages", count=0) == "Hiç mesajınız yok"
 
 
 def test_context_is_reserved(make_locales_dir: MakeLocalesDir) -> None:

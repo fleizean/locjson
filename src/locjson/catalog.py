@@ -9,13 +9,14 @@ from __future__ import annotations
 import collections
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, TypeVar, overload
+from typing import TYPE_CHECKING, TypeAlias, TypeVar, overload
 
 from locjson._compat import override
 from locjson._jsonio import JsonObject, NonFinite, escape_pointer_token
 from locjson.errors import CatalogIssue, InvalidCatalogError, InvalidLocaleError
 from locjson.formatting import Template, TemplateError, compile_template
 from locjson.locale import normalize
+from locjson.plural.categories import CATEGORIES, CATEGORY_SET, PluralEntry
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -33,10 +34,13 @@ else:
         "_BuildResultFields", ["catalog", "issues"]
     )
 
-__all__ = ["MAX_DEPTH", "BuildResult", "Catalog", "Meta", "build_catalog"]
+__all__ = ["MAX_DEPTH", "BuildResult", "Catalog", "Entry", "Meta", "build_catalog"]
 
 MAX_DEPTH = 32
 """Deepest allowed object nesting in a catalog file; the top level is level 1."""
+
+Entry: TypeAlias = Template | PluralEntry
+"""A catalog value: a compiled string or a plural entry."""
 
 _T = TypeVar("_T")
 _SURROGATE = re.compile("[\ud800-\udfff]")
@@ -80,20 +84,22 @@ class Meta:
         return self._direction
 
 
-class Catalog(Mapping[str, Template]):
+class Catalog(Mapping[str, Entry]):
     """An immutable, validated catalog for one locale.
 
-    It maps flat dot keys such as ``"nav.home"`` to compiled templates.
+    It maps flat dot keys such as ``"nav.home"`` to compiled templates, and the
+    key of a plural object (``"inbox.messages"``) to a
+    :class:`~locjson.plural.categories.PluralEntry`.
     """
 
     __slots__ = ("_entries", "_locale", "_meta")
 
-    _entries: dict[str, Template]
+    _entries: dict[str, Entry]
     _locale: str
     _meta: Meta
 
     def __init__(
-        self, locale: str, entries: Mapping[str, Template], meta: Meta | None = None
+        self, locale: str, entries: Mapping[str, Entry], meta: Meta | None = None
     ) -> None:
         object.__setattr__(self, "_locale", locale)
         object.__setattr__(self, "_entries", dict(entries))
@@ -108,7 +114,7 @@ class Catalog(Mapping[str, Template]):
         return f"Catalog(locale={self._locale!r}, keys={len(self._entries)})"
 
     @override
-    def __getitem__(self, key: str) -> Template:
+    def __getitem__(self, key: str) -> Entry:
         return self._entries[key]
 
     @override
@@ -124,21 +130,21 @@ class Catalog(Mapping[str, Template]):
         return key in self._entries
 
     @overload
-    def get(self, key: str, /) -> Template | None: ...
+    def get(self, key: str, /) -> Entry | None: ...
     @overload
-    def get(self, key: str, default: Template, /) -> Template: ...
+    def get(self, key: str, default: Entry, /) -> Entry: ...
     @overload
-    def get(self, key: str, default: _T, /) -> Template | _T: ...
+    def get(self, key: str, default: _T, /) -> Entry | _T: ...
     @override
     def get(self, key: str, default: object = None, /) -> object:
-        """Return the template for ``key``, or ``default`` when absent.
+        """Return the entry for ``key``, or ``default`` when absent.
 
         Args:
             key: A flat dot key.
             default: The value returned when ``key`` is absent.
 
         Returns:
-            The template or ``default``.
+            The template or plural entry, or ``default``.
         """
         return self._entries.get(key, default)
 
@@ -200,6 +206,13 @@ def build_catalog(locale: str, sources: Sequence[RawSource]) -> BuildResult:
       (``"ltr"`` or ``"rtl"``); values are merged across the locale's sources
       and must agree. ``$plural`` accepts only ``false``. Every other ``$`` key
       is an annotation (``$comment``) and is skipped, value included.
+    - An object whose non-``$`` keys are all CLDR plural categories
+      (``zero``, ``one``, ``two``, ``few``, ``many``, ``other``) is one plural
+      entry, stored under the object's own key. ``other`` is required and
+      every form must be a string; an empty form counts as absent, and an
+      entry whose ``other`` is empty is untranslated. ``"$plural": false``
+      makes such an object a normal group instead (``x.one``, ``x.other``).
+      An empty object contributes no keys.
     - Leaves must be strings or ``null``. ``""`` and ``null`` mean
       "untranslated" and are not stored, so lookups fall through to the next
       locale. Every other string is compiled once, here, so lookups never
@@ -242,7 +255,7 @@ class _Builder:
 
     def __init__(self, locale: str) -> None:
         self.locale = locale
-        self.entries: dict[str, Template] = {}
+        self.entries: dict[str, Entry] = {}
         self.issues: list[CatalogIssue] = []
         # Flat key -> every (origin, pointer) that defines it, for collisions.
         self.places: dict[str, list[tuple[str, str]]] = {}
@@ -325,8 +338,58 @@ class _Builder:
         elif depth >= MAX_DEPTH:
             problem = f"nesting deeper than {MAX_DEPTH} levels"
             self.issue(origin, pointer, problem)
+        elif _is_plural(value):
+            self.plural(key, value, pointer, origin)
         else:
             self.walk(value, key + ".", pointer, origin, depth + 1)
+
+    def plural(
+        self, key: str, node: Mapping[object, object], pointer: str, origin: str
+    ) -> None:
+        self.places.setdefault(key, []).append((origin, pointer))
+        self.duplicates(node, pointer, origin)
+        forms: dict[str, object] = {}
+        for raw_key, value in node.items():
+            name = str(raw_key)
+            if name.startswith("$"):
+                child = f"{pointer}/{_token(name)}"
+                self.reserved(name, value, key + ".", child, origin, top=False)
+            else:
+                forms[name] = value
+        bad = [name for name in CATEGORIES if not isinstance(forms.get(name, ""), str)]
+        if bad:
+            for name in bad:
+                problem = (
+                    "looks like a plural entry (all keys are plural categories) "
+                    f"but '{name}' is not a string; add \"$plural\": false to "
+                    "make it a group"
+                )
+                self.issue(origin, f"{pointer}/{name}", problem)
+            return
+        if "other" not in forms:
+            self.issue(origin, pointer, "plural entry has no 'other' form")
+            return
+        compiled: dict[str, Template] = {}
+        for name in CATEGORIES:
+            text = forms.get(name)
+            if isinstance(text, str) and text:  # an empty form counts as absent
+                template = self.compile(text, f"{pointer}/{name}", origin)
+                if template is not None:
+                    compiled[name] = template
+        # An empty "other" leaves the entry untranslated, so lookups fall
+        # through; a form that failed to compile is already an issue.
+        if "other" in compiled:
+            self.entries[key] = PluralEntry(compiled)
+
+    def compile(self, text: str, pointer: str, origin: str) -> Template | None:
+        if _SURROGATE.search(text):
+            self.issue(origin, pointer, "lone surrogate in value")
+            return None
+        try:
+            return compile_template(text)
+        except TemplateError as exc:
+            self.issue(origin, pointer, str(exc))
+            return None
 
     def valid_key(self, key: str, pointer: str, origin: str) -> bool:
         segments = key.split(".")
@@ -436,15 +499,10 @@ class _Builder:
 
     def leaf(self, key: str, value: object, pointer: str, origin: str) -> None:
         if isinstance(value, str):
-            if not value:
-                return
-            if _SURROGATE.search(value):
-                self.issue(origin, pointer, "lone surrogate in value")
-                return
-            try:
-                self.entries[key] = compile_template(value)
-            except TemplateError as exc:
-                self.issue(origin, pointer, str(exc))
+            if value:
+                template = self.compile(value, pointer, origin)
+                if template is not None:
+                    self.entries[key] = template
         elif isinstance(value, NonFinite):
             self.issue(origin, pointer, f"{value.name} is not valid JSON")
         elif value is not None:
@@ -454,6 +512,20 @@ class _Builder:
 
 def _kind(value: object) -> str:
     return type(value).__name__
+
+
+def _is_plural(node: Mapping[object, object]) -> bool:
+    """Tell whether an object is a plural entry rather than a group.
+
+    In order: ``"$plural": false`` makes a group; otherwise an object whose
+    non-``$`` keys are non-empty and all plural categories is a plural entry
+    (even a broken one, which the builder then reports); anything else is a
+    group.
+    """
+    if node.get("$plural") is False:
+        return False
+    names = [key for key in node if not (isinstance(key, str) and key.startswith("$"))]
+    return bool(names) and all(name in CATEGORY_SET for name in names)
 
 
 def _safe(text: str) -> str:

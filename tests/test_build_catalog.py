@@ -15,6 +15,7 @@ import pytest
 from locjson import DictLoader, InvalidCatalogError, Localizer, RawSource
 from locjson._jsonio import read_json
 from locjson.catalog import BuildResult, Catalog, Meta, build_catalog
+from locjson.formatting import Template
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,6 +23,12 @@ if TYPE_CHECKING:
     from locjson.errors import CatalogIssue
 
 Issue = tuple[str, str, str]
+
+
+def _tpl(catalog: Catalog, key: str) -> Template:
+    entry = catalog[key]
+    assert isinstance(entry, Template)
+    return entry
 
 
 def _src(
@@ -325,7 +332,10 @@ def test_same_key_from_two_namespaces_is_distinct() -> None:
     a = _src({"x": "1"}, "en/a.json", "a")
     b = _src({"x": "2"}, "en/b.json", "b")
     catalog = _build(a, b).unwrap()
-    assert {key: catalog[key].source for key in catalog} == {"a.x": "1", "b.x": "2"}
+    assert {key: _tpl(catalog, key).source for key in catalog} == {
+        "a.x": "1",
+        "b.x": "2",
+    }
 
 
 @pytest.mark.parametrize("reverse", [False, True], ids=["sorted", "reversed"])
@@ -353,7 +363,7 @@ def test_namespace_prefixes_dotted_keys() -> None:
 def test_empty_and_null_leaves_are_not_stored_but_space_is() -> None:
     catalog = _build(_src({"empty": "", "null": None, "space": " "})).unwrap()
     assert sorted(catalog) == ["space"]
-    assert catalog["space"].render({}) == " "
+    assert _tpl(catalog, "space").render({}) == " "
 
 
 def test_all_empty_file_builds_an_empty_catalog() -> None:
@@ -388,14 +398,14 @@ def test_keys_are_not_unicode_normalized() -> None:
     assert nfc != nfd
     catalog = _build(_src({nfc: "composed", nfd: "decomposed"})).unwrap()
     assert len(catalog) == 2
-    assert catalog[nfc].source == "composed"
-    assert catalog[nfd].source == "decomposed"
+    assert _tpl(catalog, nfc).source == "composed"
+    assert _tpl(catalog, nfd).source == "decomposed"
 
 
 def test_values_are_stored_exactly_as_decoded() -> None:
     nfd = unicodedata.normalize("NFD", "Işık İstanbul")
     catalog = _build(_src({"x": nfd})).unwrap()
-    assert catalog["x"].render({}) == nfd
+    assert _tpl(catalog, "x").render({}) == nfd
 
 
 # --- deterministic issues and atomic results (CAT-05, RT-05) ---------------------
@@ -525,7 +535,7 @@ def test_build_is_pure_and_thread_safe() -> None:
         assert (
             sorted(catalog) == sorted(expected) == ["greeting", "nav.a.b", "nav.home"]
         )
-        assert catalog["greeting"].render({"name": "Işık"}) == "Merhaba, Işık!"
+        assert _tpl(catalog, "greeting").render({"name": "Işık"}) == "Merhaba, Işık!"
         assert catalog.direction == "rtl"
     assert data == {
         "$meta": {"direction": "rtl"},

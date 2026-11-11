@@ -189,6 +189,7 @@ containers = ["locjson"]
 layers = [
   "localizer",
   "loaders : catalog",
+  "plural",
   "locale : formatting : _jsonio",
   "errors : _compat",
 ]

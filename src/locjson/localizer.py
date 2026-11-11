@@ -12,6 +12,8 @@ from locjson.catalog import build_catalog
 from locjson.errors import ConfigurationError, InvalidLocaleError, LocJsonError
 from locjson.loaders.filesystem import FilesystemLoader
 from locjson.locale import fallback_chain, normalize
+from locjson.plural.categories import PluralEntry
+from locjson.plural.resolver import select_form
 
 if TYPE_CHECKING:
     import os
@@ -180,9 +182,17 @@ class Localizer:
             catalog = snapshot.catalogs.get(candidate)
             if catalog is None:
                 catalog = self._catalog(candidate)
-            template = catalog.get(key)
-            if template is not None:
-                return template.render(values)
+            entry = catalog.get(key)
+            if entry is None:
+                continue
+            if isinstance(entry, PluralEntry):
+                # The rules follow the catalog that supplied the entry.
+                entry = (
+                    entry.other
+                    if count is None
+                    else select_form(entry, catalog.locale, count)
+                )
+            return entry.render(values)
         return key
 
     def _resolve(self, locale: str | None) -> str:
