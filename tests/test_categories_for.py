@@ -99,7 +99,7 @@ def test_pt_and_pt_pt_share_categories_but_not_rules() -> None:
 @pytest.mark.parametrize("tag", ["", "und", "x" * 129, "İt", None])
 def test_invalid_tags_raise(tag: object) -> None:
     with pytest.raises(InvalidLocaleError):
-        plural.categories_for(tag)
+        plural.categories_for(tag)  # type: ignore[arg-type]
 
 
 def test_callers_order_the_set_with_categories() -> None:
