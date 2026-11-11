@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Integer types that implement `__index__` but are not `int` subclasses, such
+  as NumPy's `np.int64`, are now counts and act as the int
+  `operator.index()` returns. `bool` is still rejected, and `Fraction` and
+  other numbers are still invalid counts. The `count` parameter of `t()` and
+  `Translator` accepts `SupportsIndex`.
+- The invalid-count log ends in "using 'other'" only for plural entries; for
+  a plain entry it says that `{count}` is left literal.
+
+### Fixed
+
+- A non-integral `float` subclass whose `repr()` is not a plain number (NumPy
+  2's `np.float64(1.5)` reprs as `np.float64(1.5)`) made `t()` raise
+  `decimal.InvalidOperation`. Counts are now read through the built-in
+  `float`, `int` and `Decimal` value, never through a subclass's own `repr` or
+  arithmetic, and an `ArithmeticError` while reading a count is an
+  invalid-count slip instead of an exception.
+- Babel's plural rules got `Decimal` counts rounded to the caller's decimal
+  context: counts with more than 28 significant digits could get the wrong
+  category, and a context trapping `Inexact` or `Rounded` made `t()` raise.
+  Whole counts now reach Babel as plain ints, and fractional ones in an
+  exact, non-trapping context.
+- Tags that spell out the language's likely script, such as `pt-Latn-PT` and
+  `pt-Latn-AO`, got the Brazilian Portuguese rule instead of the `pt-PT` one.
+  The rule lookup now also tries each tag without its likely script.
+
 ## [0.2.0] - 2026-11-11
 
 CLDR plural rules.
@@ -44,6 +71,11 @@ CLDR plural rules.
   than 1000 digits) are now slips: 0.1 treated `True` as 1. The `other` form is
   used with `{count}` left as literal text, the slip is logged, and strict mode
   or `missing="raise"` raises `InterpolationError`.
+- The internal module `locjson.plural.resolver` (not part of
+  `locjson.__all__`) no longer has `default_resolver` or `PluralResolver`, and
+  its `select_form` now takes the count's plural operands and a rule:
+  `select_form(entry, operands, rule)` instead of
+  `select_form(entry, locale, count, resolver)`.
 
 ## [0.1.0] - 2026-11-11
 
