@@ -188,9 +188,12 @@ type = "layers"
 containers = ["locjson"]
 layers = [
   "localizer",
-  "context : plural.resolver",
+  "context : plural.resolver : translator",
   "loaders : catalog",
   "locale : formatting : plural.categories : _jsonio",
   "errors : _log",
   "_compat",
 ]
+# Annotation-only, under TYPE_CHECKING; tests/test_translator.py checks that
+# translator never imports localizer at runtime.
+ignore_imports = ["locjson.translator -> locjson.localizer"]

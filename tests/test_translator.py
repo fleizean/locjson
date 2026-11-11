@@ -185,9 +185,9 @@ def test_non_string_prefix_raises(l10n: Localizer) -> None:
 def test_translators_are_immutable(l10n: Localizer) -> None:
     tr = l10n.for_locale("tr")
     with pytest.raises(AttributeError):
-        tr._locale = "ar"  # type: ignore[misc]
+        tr._locale = "ar"
     with pytest.raises(AttributeError):
-        tr.extra = 1  # type: ignore[attr-defined]
+        tr.extra = 1
     with pytest.raises(AttributeError):
         del tr._prefix
     with pytest.raises(AttributeError):

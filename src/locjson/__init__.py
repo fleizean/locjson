@@ -1,8 +1,8 @@
 """Typed, zero-dependency JSON localization for Python.
 
 Use a :class:`Localizer` directly, or install a default one with
-:func:`setup` and call the module-level :func:`t`, :func:`has`, :func:`use`
-and :func:`set_locale`.
+:func:`setup` and call the module-level :func:`t`, :func:`has`, :func:`use`,
+:func:`set_locale`, :func:`for_locale` and :func:`scope`.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from locjson.errors import (
 from locjson.loaders import DictLoader, FilesystemLoader, Loader, RawSource
 from locjson.locale import direction, negotiate
 from locjson.localizer import Localizer
+from locjson.translator import Translator
 
 if TYPE_CHECKING:
     import os
@@ -42,11 +43,14 @@ __all__ = [
     "Localizer",
     "MissingTranslationError",
     "RawSource",
+    "Translator",
     "__version__",
     "direction",
+    "for_locale",
     "get_localizer",
     "has",
     "negotiate",
+    "scope",
     "set_locale",
     "setup",
     "t",
@@ -76,6 +80,7 @@ def setup(
     fallbacks: Mapping[str, Sequence[str]] | None = None,
     missing: MissingPolicy = "key",
     preload: bool = False,
+    strict: bool | None = None,
 ) -> Localizer:
     """Create a :class:`Localizer` and install it as the module default.
 
@@ -99,6 +104,8 @@ def setup(
         fallbacks: Extra locales to try per locale.
         missing: What :func:`t` does when a key is missing everywhere.
         preload: Load and validate every locale now.
+        strict: Make every slip raise. ``None`` reads ``LOCJSON_STRICT``
+            once, here.
 
     Returns:
         The installed Localizer.
@@ -116,6 +123,7 @@ def setup(
         fallbacks=fallbacks,
         missing=missing,
         preload=preload,
+        strict=strict,
     )
     _DEFAULT.localizer = localizer
     return localizer
@@ -205,6 +213,41 @@ def use(locale: str) -> AbstractContextManager[str]:
         LocJsonError: If :func:`setup` has not been called.
     """
     return get_localizer().use(locale)
+
+
+def for_locale(locale: str) -> Translator:
+    """Return a :class:`Translator` of the default Localizer bound to ``locale``.
+
+    See :meth:`Localizer.for_locale`.
+
+    Args:
+        locale: A locale tag. An invalid tag binds the default locale.
+
+    Returns:
+        A Translator that never reads or changes the current locale.
+
+    Raises:
+        LocJsonError: If :func:`setup` has not been called.
+    """
+    return get_localizer().for_locale(locale)
+
+
+def scope(prefix: str) -> Translator:
+    """Return a :class:`Translator` of the default Localizer scoped to ``prefix``.
+
+    See :meth:`Localizer.scope`.
+
+    Args:
+        prefix: A key prefix such as ``"inbox"``.
+
+    Returns:
+        A Translator that prepends ``prefix`` to every key.
+
+    Raises:
+        LocJsonError: If :func:`setup` has not been called.
+        ConfigurationError: If ``prefix`` is not a valid prefix.
+    """
+    return get_localizer().scope(prefix)
 
 
 def set_locale(locale: str) -> None:

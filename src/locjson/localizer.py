@@ -25,6 +25,7 @@ from locjson.loaders.filesystem import FilesystemLoader
 from locjson.locale import fallback_chain, normalize
 from locjson.plural.categories import PluralEntry
 from locjson.plural.resolver import select_form
+from locjson.translator import Translator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -277,6 +278,48 @@ class Localizer:
             catalogs = {tag: self._build(tag) for tag in sorted(targets)}
             # Chains do not depend on availability, so _chains stays valid.
             self._snapshot = _Snapshot(available, catalogs)
+
+    def for_locale(self, locale: str) -> Translator:
+        """Return a :class:`~locjson.Translator` bound to ``locale``.
+
+        The Translator uses ``locale`` for every call unless the call passes
+        ``locale=``, and never reads or changes :attr:`current_locale`. Use
+        it where no request context exists: background jobs, scheduled tasks,
+        e-mails in a user's language.
+
+        Example:
+            >>> l10n.for_locale(user.language)("nav.home")  # doctest: +SKIP
+            'Ana Sayfa'
+
+        Args:
+            locale: A locale tag. It is normalized once, here; an invalid tag
+                binds :attr:`default_locale` and is logged at DEBUG.
+
+        Returns:
+            A new Translator with no prefix.
+        """
+        tag = self._canonical(locale)
+        return Translator(self, locale=self._default if tag is None else tag)
+
+    def scope(self, prefix: str) -> Translator:
+        """Return a :class:`~locjson.Translator` that prepends ``prefix`` to keys.
+
+        ``l10n.scope("inbox")("messages")`` looks up ``"inbox.messages"``.
+        The Translator follows :attr:`current_locale`; chain
+        :meth:`Translator.for_locale` to bind a locale as well.
+
+        Args:
+            prefix: A key prefix such as ``"inbox"`` or ``"settings.profile"``.
+
+        Returns:
+            A new Translator with no bound locale.
+
+        Raises:
+            ConfigurationError: If ``prefix`` is empty, starts or ends with
+                ``"."``, has an empty segment or a segment starting with
+                ``"$"``.
+        """
+        return Translator(self, prefix=prefix)
 
     def negotiate(self, accept_language: str | None) -> str:
         """Pick the best discovered locale for an ``Accept-Language`` header.
