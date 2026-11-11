@@ -262,7 +262,7 @@ def test_filesystem_loader_ignores_dotfiles_other_files_and_dirs(
     root = make_locales_dir({"en": {"a": "b"}})
     (root / ".hidden.json").write_text("{", encoding="utf-8")
     (root / "notes.txt").write_text("notes", encoding="utf-8")
-    (root / "tr.json").mkdir()
+    (root / ".git").mkdir()
     loader = FilesystemLoader(root)
     assert loader.discover_locales() == frozenset({"en"})
     assert loader.root == root
