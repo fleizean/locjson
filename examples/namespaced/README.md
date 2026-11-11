@@ -76,6 +76,8 @@ he: rtl
 ```
 
 `direction()` takes the first `$meta.direction` found along the locale's
-fallback chain. Declare a direction only in the catalogs that need it: a
-`"direction": "ltr"` in `en` would also apply to every locale that falls back
-to `en`, including right-to-left ones.
+fallback chain, but only from catalogs in the same language and script as the
+requested locale: `ar-EG` uses the direction declared in `ar`, while a
+`"direction": "ltr"` in `en` never applies to `ar` or `he`, even though they
+fall back to `en` for missing keys. A script counts too: `sr-Latn` never uses
+the direction declared in `sr`, which is written in Cyrillic.

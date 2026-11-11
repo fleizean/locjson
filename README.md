@@ -417,7 +417,7 @@ print(l10n.current_locale)          # -> tr
 
 ### Negotiation and text direction
 
-`negotiate()` picks the best discovered locale for an `Accept-Language` header and falls back to `default_locale`. Malformed headers never raise. `direction()` returns the first `$meta.direction` along the locale's chain, otherwise a built-in table decides.
+`negotiate()` picks the best discovered locale for an `Accept-Language` header and falls back to `default_locale`. Malformed headers never raise. `direction()` returns the first `$meta.direction` along the locale's chain, taken only from catalogs in the same language and script as the requested locale (`ar-EG` uses `ar`'s, `ar` never uses `en`'s), otherwise a built-in table decides.
 
 <!-- exec -->
 ```python
