@@ -6,6 +6,8 @@ import importlib
 import json
 import subprocess
 import sys
+from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 import pytest
@@ -181,6 +183,84 @@ def test_warm_lookups_do_no_babel_work(
     assert [l10n.t("x", locale="cy", count=n) for n in range(1000)] == forms
     head = ["zero 0", "one 1", "two 2", "few 3", "other 4", "other 5", "many 6"]
     assert forms[:7] == head
+
+
+# --- parity with Babel (ROADMAP SC5) --------------------------------------------
+
+FIXTURE_PATH = Path(__file__).parent / "data" / "cldr49_plural_samples.json"
+FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+SAMPLES: dict[str, dict[str, list[str]]] = FIXTURE["samples"]
+PT_PT_CHILDREN: frozenset[str] = frozenset(FIXTURE["pt_pt_children"])
+PARITY_DECIMALS: tuple[Decimal | float, ...] = (
+    *(
+        Decimal(text)
+        for text in (
+            "0.0",
+            "0.5",
+            "1.0",
+            "1.00",
+            "1.5",
+            "2.0",
+            "2.5",
+            "3.0",
+            "10.0",
+            "11.0",
+            "100.0",
+            "1000000.0",
+        )
+    ),
+    0.5,
+    1.0,
+    1.5,
+    2.5,
+)
+
+# Babel 2.18 bundles CLDR 47; locjson pins CLDR 49. Each entry maps
+# (tag, str(value)) to Babel's answer where the built-in rule follows a CLDR
+# change after 47, with a comment naming that change. None found so far.
+KNOWN_CLDR_DIFFERENCES: dict[tuple[str, str], str] = {}
+
+# Built-in tags that Babel's CLDR has no locale for, mapped to the CLDR 49
+# parent whose Babel rule they are compared with.
+BABEL_UNKNOWN_TAGS: dict[str, str] = {
+    # CLDR 49 parentLocales lists pt-FR under pt-PT; Babel 2.18 (CLDR 47) has
+    # no pt_FR locale data.
+    "pt-FR": "pt-PT",
+}
+
+
+def _number(sample: str) -> int | Decimal:
+    return Decimal(sample) if "." in sample else int(sample)
+
+
+def _parity_values(tag: str) -> list[int | Decimal | float]:
+    samples = SAMPLES["pt-PT" if tag in PT_PT_CHILDREN else tag]
+    values: list[int | Decimal | float] = [
+        _number(sample) for group in samples.values() for sample in group
+    ]
+    values.extend(range(201))
+    values.extend(PARITY_DECIMALS)
+    return values
+
+
+@pytest.mark.parametrize("tag", sorted(BUILTIN_RULES))
+def test_builtin_rules_match_babel(tag: str) -> None:
+    babel = pytest.importorskip("babel")
+    try:
+        babel_locale = babel.Locale.parse(tag, sep="-")
+    except babel.UnknownLocaleError:
+        assert tag in BABEL_UNKNOWN_TAGS, f"Babel does not know {tag!r}"
+        babel_locale = babel.Locale.parse(BABEL_UNKNOWN_TAGS[tag], sep="-")
+    babel_form = babel_locale.plural_form
+    rule = rule_for(tag)
+    mismatches = []
+    for value in _parity_values(tag):
+        ours = rule(plural_operands(value))
+        theirs = babel_form(value)
+        allowed = KNOWN_CLDR_DIFFERENCES.get((tag, str(value)))
+        if theirs not in {ours, allowed}:
+            mismatches.append(f"{value!r}: locjson {ours}, Babel {theirs}")
+    assert not mismatches, f"{tag}: " + "; ".join(mismatches)
 
 
 # --- the zero-dependency path ---------------------------------------------------
