@@ -521,6 +521,10 @@ Every command will support `--format text`, `json` or `github` (inline annotatio
 
 See the [changelog](https://github.com/fleizean/locjson/blob/main/CHANGELOG.md) for what has shipped.
 
+## Examples
+
+The [`examples/`](https://github.com/fleizean/locjson/tree/main/examples) folder holds small, runnable projects: a quick start, the namespaced layout with a right-to-left locale, background jobs that send e-mails in each user's language, testing translations with pytest, and FastAPI, Flask and Django apps that pick the locale from `Accept-Language`. See the [examples index](https://github.com/fleizean/locjson/blob/main/examples/README.md) for how to run each one.
+
 ## Contributing
 
 Issues and pull requests are welcome. Please open an issue first for larger changes.

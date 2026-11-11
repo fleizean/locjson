@@ -1,0 +1,5 @@
+{
+  "app": { "name": "Seyahat Notları" },
+  "greeting": "Tekrar hoş geldiniz, {name}!",
+  "nav": { "home": "Ana sayfa", "trips": "Gezilerim" }
+}

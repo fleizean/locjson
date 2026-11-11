@@ -1,0 +1,12 @@
+{
+  "digest": {
+    "subject": "Seu resumo diário, {name}",
+    "greeting": "Olá, {name},",
+    "unread": {
+      "zero": "Você está em dia.",
+      "one": "Você tem {count} notificação não lida.",
+      "other": "Você tem {count} notificações não lidas."
+    },
+    "signoff": "Equipe Acme"
+  }
+}

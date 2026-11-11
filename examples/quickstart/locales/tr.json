@@ -1,0 +1,13 @@
+{
+  "$comment": "No \"farewell\" here on purpose: it falls back to English.",
+  "app": { "name": "Kitaplık" },
+  "greeting": "Merhaba, {name}!",
+  "shelf": {
+    "books": {
+      "zero": "Rafınız boş",
+      "one": "Rafınızda {count} kitap var",
+      "other": "Rafınızda {count} kitap var"
+    }
+  },
+  "help": "Başlığa göre aramak için {{title}} yazın."
+}

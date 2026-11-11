@@ -44,6 +44,9 @@ path = "src/locjson/_version.py"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/locjson", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+# "README.md" above also matches examples/*/README.md. The examples stay out of
+# the sdist, and so does the test that runs them.
+exclude = ["/examples", "/tests/test_examples.py"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/locjson"]
@@ -128,6 +131,10 @@ banned-module-level-imports = [
 "src/locjson/plural/rules.py" = ["PLR2004"]
 # Maintainer scripts print a summary and open fixed https URLs.
 "scripts/**" = ["T20", "S310"]
+# Example projects are applications, not the library: they print, may import
+# anything at module level and hold Turkish text.
+"examples/**" = ["T201", "TID253", "RUF001"]
+"examples/**/{test_*,conftest}.py" = ["D103", "S101", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.11"
