@@ -239,6 +239,30 @@ def parents(tag: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _without_likely_script(tag: str) -> str | None:
+    """Return a canonical tag without its script, when that script is implied.
+
+    The script is implied when it is the language's likely script, or when
+    the language has a single script, as in :func:`parents`: ``pt-Latn-PT``
+    gives ``pt-PT``. Internal: the plural-rule lookup uses it, so a tag that
+    spells out its script finds the rule of the script-less tag.
+
+    Args:
+        tag: A canonical locale tag.
+
+    Returns:
+        The tag without its script subtag, or ``None`` when the tag has no
+        script or its script is not implied (``zh-Hant-TW``, ``sr-Latn``).
+    """
+    language, script, region, variants = _split(tag)
+    if script is None:
+        return None
+    likely = _LIKELY_SCRIPT.get(language)
+    if likely is not None and likely != script:
+        return None
+    return "-".join([language, *([region] if region else []), *variants])
+
+
 def fallback_chain(
     tag: str, fallbacks: Mapping[str, Sequence[str]], default: str
 ) -> tuple[str, ...]:
