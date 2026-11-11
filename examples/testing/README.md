@@ -48,11 +48,15 @@ Once locjson is published, `pip install locjson` will be enough.
   catalog up front. To check that each locale translates every key the code
   uses, build a Localizer with that locale as `default_locale`: its fallback
   chain then has no English step that could hide a gap.
+- **Plural forms per language.** `locjson.categories_for(locale)` returns the
+  plural forms a language's rule can pick (`one`/`other` for English and
+  Turkish, `one`/`few`/`many`/`other` for Russian). The test checks that each
+  plural entry in the JSON files has all of them.
 - Assertions compare complete rendered strings, including Turkish text such as
   `ı` and `ş`.
 
 Expected result:
 
 ```text
-17 passed
+19 passed
 ```

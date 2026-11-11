@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from decimal import Decimal
 
@@ -13,6 +14,7 @@ from locjson import (
     InterpolationError,
     Localizer,
     MissingTranslationError,
+    categories_for,
 )
 
 # --- Unit tests: in-memory catalogs, exact strings --------------------------
@@ -82,6 +84,15 @@ def test_every_locale_has_every_key(locale: str, key: str) -> None:
     # fallback that could hide a missing translation.
     only_this_locale = Localizer(shop.LOCALES, default_locale=locale)
     assert only_this_locale.has(key), f"{locale} is missing {key}"
+
+
+@pytest.mark.parametrize("locale", ["en", "tr"])
+def test_plural_entries_have_every_form_the_language_needs(locale: str) -> None:
+    # categories_for() lists the forms a language's plural rule can pick:
+    # one/other for English and Turkish, one/few/many/other for Russian.
+    catalog = json.loads((shop.LOCALES / f"{locale}.json").read_text(encoding="utf-8"))
+    forms = set(catalog["order"]["items"])
+    assert categories_for(locale) <= forms, f"{locale} order.items: {forms}"
 
 
 def test_real_catalogs_render(real_l10n: Localizer) -> None:

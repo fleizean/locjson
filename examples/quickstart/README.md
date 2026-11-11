@@ -29,8 +29,11 @@ Once locjson is published, `pip install locjson` will be enough.
   `default_locale` is `"en"`.
 - `t("greeting", name="Ada")`: named `{name}` placeholders. `{{` and `}}` are
   literal braces (`help`).
-- `t("shelf.books", count=n)`: a plural entry. The `zero` form wins for 0,
-  then `one` for 1, otherwise `other`. `{count}` is filled in automatically.
+- `t("shelf.books", count=n)`: a plural entry. The `zero` form wins for 0.
+  Otherwise the language's CLDR plural rule picks the form: `one` or `other`
+  in English and Turkish (Russian, Arabic and others use more forms, see
+  [Plural rules](../../README.md#plural-rules)). `{count}` is filled in
+  automatically.
 - Fallback: `tr.json` has no `farewell`, so the Turkish lookup returns the
   English text. `tr-TR` has no catalog, so its chain is `tr-TR → tr → en`. A
   key that exists nowhere returns the key itself.
