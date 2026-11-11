@@ -7,11 +7,12 @@ The runtime and the CLI share it, so both apply exactly the same rules.
 from __future__ import annotations
 
 import collections
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypeVar, overload
 
 from locjson._compat import override
-from locjson._jsonio import escape_pointer_token
+from locjson._jsonio import JsonObject, NonFinite, escape_pointer_token
 from locjson.errors import CatalogIssue, InvalidCatalogError
 from locjson.formatting import Template, TemplateError, compile_template
 
@@ -31,9 +32,13 @@ else:
         "_BuildResultFields", ["catalog", "issues"]
     )
 
-__all__ = ["BuildResult", "Catalog", "Meta", "build_catalog"]
+__all__ = ["MAX_DEPTH", "BuildResult", "Catalog", "Meta", "build_catalog"]
+
+MAX_DEPTH = 32
+"""Deepest allowed object nesting in a catalog file; the top level is level 1."""
 
 _T = TypeVar("_T")
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 class Meta:
@@ -225,31 +230,71 @@ class _Builder:
         self.issues.append(CatalogIssue(origin, pointer, problem, self.locale))
 
     def walk(
-        self, node: Mapping[object, object], prefix: str, pointer: str, origin: str
+        self,
+        node: Mapping[object, object],
+        prefix: str,
+        pointer: str,
+        origin: str,
+        depth: int = 1,
     ) -> None:
+        if isinstance(node, JsonObject):
+            for duplicate in dict.fromkeys(node.duplicates):
+                child = f"{pointer}/{_token(duplicate)}"
+                self.issue(origin, child, f"duplicate key '{_safe(duplicate)}'")
         for raw_key, value in node.items():
             if not isinstance(raw_key, str):
                 token = escape_pointer_token(str(raw_key))
                 problem = f"object keys must be strings, got {_kind(raw_key)}"
                 self.issue(origin, f"{pointer}/{token}", problem)
                 continue
+            child = f"{pointer}/{_token(raw_key)}"
+            if _SURROGATE.search(raw_key):
+                self.issue(origin, child, "lone surrogate in key")
+                continue
             if raw_key.startswith("$"):
                 continue
-            child = f"{pointer}/{escape_pointer_token(raw_key)}"
             key = prefix + raw_key
-            if isinstance(value, Mapping):
-                self.walk(value, key + ".", child, origin)
-            elif isinstance(value, str):
-                if not value:
-                    continue
-                try:
-                    self.entries[key] = compile_template(value)
-                except TemplateError as exc:
-                    self.issue(origin, child, str(exc))
-            elif value is not None:
-                problem = f"expected a string or object, got {_kind(value)}"
+            if not isinstance(value, Mapping):
+                self.leaf(key, value, child, origin)
+            elif depth >= MAX_DEPTH:
+                problem = f"nesting deeper than {MAX_DEPTH} levels"
                 self.issue(origin, child, problem)
+            else:
+                self.walk(value, key + ".", child, origin, depth + 1)
+
+    def leaf(self, key: str, value: object, pointer: str, origin: str) -> None:
+        if isinstance(value, str):
+            if not value:
+                return
+            if _SURROGATE.search(value):
+                self.issue(origin, pointer, "lone surrogate in value")
+                return
+            try:
+                self.entries[key] = compile_template(value)
+            except TemplateError as exc:
+                self.issue(origin, pointer, str(exc))
+        elif isinstance(value, NonFinite):
+            self.issue(origin, pointer, f"{value.name} is not valid JSON")
+        elif value is not None:
+            problem = f"expected a string or object, got {_kind(value)}"
+            self.issue(origin, pointer, problem)
 
 
 def _kind(value: object) -> str:
     return type(value).__name__
+
+
+def _safe(text: str) -> str:
+    r"""Return ``text`` with lone surrogates written as backslash escapes.
+
+    Diagnostics must stay encodable as UTF-8 even when they name a key that
+    holds a lone surrogate, so U+D800 is shown as the six characters
+    ``\ud800``.
+    """
+    if _SURROGATE.search(text):
+        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return text
+
+
+def _token(key: str) -> str:
+    return escape_pointer_token(_safe(key))
