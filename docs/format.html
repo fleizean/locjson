@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>File format and lookup rules · locjson</title>
+<meta name="description" content="How locjson reads JSON catalogs: layouts, nested keys, plural entries with explicit zero, $meta, {name} interpolation, BCP 47 locale tags, fallback chains, the missing policy and errors.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f4ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f141c" media="(prefers-color-scheme: dark)">
+<link rel="canonical" href="https://fleizean.github.io/locjson/format.html">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="preload" href="assets/fonts/outfit-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="locjson">
+<meta property="og:title" content="File format and lookup rules · locjson">
+<meta property="og:description" content="Layouts, plural entries, $meta, {name} interpolation, locale fallback chains and errors in locjson catalogs.">
+<meta property="og:url" content="https://fleizean.github.io/locjson/format.html">
+<meta property="og:image" content="https://fleizean.github.io/locjson/assets/logo.png">
+<meta property="og:image:width" content="672">
+<meta property="og:image:height" content="192">
+<meta property="og:image:alt" content="The locjson logo: a speech bubble with JSON braces around a globe, next to the word locjson.">
+<meta name="twitter:card" content="summary">
+<script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="masthead">
+  <div class="wrap masthead__row">
+    <a class="brand" href="./">
+      <picture>
+        <source srcset="assets/logo-dark.svg" media="(prefers-color-scheme: dark)">
+        <img src="assets/logo.svg" alt="locjson home" width="126" height="36">
+      </picture>
+    </a>
+    <nav aria-label="Site">
+      <ul class="nav">
+        <li><a href="./#resolver">Resolver</a></li>
+        <li><a href="format.html" aria-current="page">File format</a></li>
+        <li><a href="./#roadmap">Roadmap</a></li>
+        <li><a href="https://github.com/fleizean/locjson">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+  <div class="statusbar"><p class="wrap"><span class="dot" aria-hidden="true"></span><span>Pre-release. This page describes the planned 0.1 behaviour, which can still change before release.</span></p></div>
+</header>
+
+<div class="wrap doc">
+  <nav class="toc" aria-labelledby="toc-title">
+    <h2 id="toc-title">On this page</h2>
+    <ol>
+      <li><a href="#layouts">Layouts</a></li>
+      <li><a href="#keys">Keys and values</a></li>
+      <li><a href="#plurals">Plural entries</a></li>
+      <li><a href="#meta">$meta</a></li>
+      <li><a href="#rejected">Rejected at load</a></li>
+      <li><a href="#interpolation">Interpolation</a></li>
+      <li><a href="#locales">Locale tags</a></li>
+      <li><a href="#fallback">Fallback chain</a></li>
+      <li><a href="#missing">Missing translations</a></li>
+      <li><a href="#errors">Errors</a></li>
+    </ol>
+  </nav>
+
+  <main id="main" class="prose">
+    <header>
+      <h1>File format and lookup rules</h1>
+      <p class="lede">A catalog is a JSON object per locale. This page lists what locjson accepts in that object, what it rejects at load time, and how <code>t()</code> walks from a requested locale to a string.</p>
+    </header>
+
+    <h2 id="layouts"><span class="n">1</span>Layouts</h2>
+    <p>Both layouts are detected automatically. Pick one per locale.</p>
+    <div class="sheet">
+      <div class="tab"><span>single file per locale · namespaced</span><span class="tab__kind">tree</span></div>
+<pre><code>locales/                     locales/
+├── en.json                  ├── en/
+└── tr.json                  │   ├── common.json   → keys "common.*"
+                             │   └── inbox.json    → keys "inbox.*"
+                             └── tr/
+                                 ├── common.json
+                                 └── inbox.json</code></pre>
+    </div>
+    <p>In the namespaced layout, each file name becomes the first segment of its keys. A locale present in both layouts (<code>en.json</code> and <code>en/</code>) is an error that names both paths.</p>
+
+    <h2 id="keys"><span class="n">2</span>Keys and values</h2>
+    <div class="table-wrap">
+      <table class="ref">
+        <thead><tr><th scope="col">JSON</th><th scope="col">Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>{"nav": {"home": "Home"}}</code></td><td>Nested objects flatten to dot keys: <code>t("nav.home")</code>.</td></tr>
+          <tr><td><code>"Hello, {name}!"</code></td><td>A translation. Values must be strings.</td></tr>
+          <tr><td><code>""</code> or <code>null</code></td><td>Untranslated. The lookup falls through to the next locale in the chain.</td></tr>
+          <tr><td><code>{"zero": …, "one": …, "other": …}</code></td><td>A plural entry. See <a href="#plurals">plural entries</a>.</td></tr>
+          <tr><td><code>{"$plural": false, "one": …, "other": …}</code></td><td>Forces an object that looks like a plural entry to be read as a normal group.</td></tr>
+          <tr><td><code>"$meta"</code> (top level)</td><td>File metadata, never a translation.</td></tr>
+          <tr><td><code>"$comment"</code> and other <code>$</code> keys</td><td>Ignored. Handy for notes to translators.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="plurals"><span class="n">3</span>Plural entries</h2>
+    <p>An object is a plural entry when every key is a CLDR category (<code>zero</code>, <code>one</code>, <code>two</code>, <code>few</code>, <code>many</code>, <code>other</code>), <code>other</code> is present, and every value is a string.</p>
+    <div class="sheet">
+      <div class="tab"><span>locales/tr.json</span><span class="tab__kind">JSON</span></div>
+<pre data-lang="json"><code>{
+  "inbox": {
+    "messages": {
+      "zero": "Hiç mesajınız yok",
+      "one": "{count} mesajınız var",
+      "other": "{count} mesajınız var"
+    }
+  }
+}</code></pre>
+    </div>
+    <ul>
+      <li><code>count</code> is passed to the template automatically, so <code>{count}</code> just works.</li>
+      <li>When <code>count == 0</code> and the entry has a <code>zero</code> form, <code>zero</code> is used in every language.</li>
+      <li>Otherwise the language's plural category is used, falling back to <code>other</code>. In 0.1 this is a simple one/other rule. CLDR rules for 17 built-in languages are planned for 0.2.</li>
+    </ul>
+    <p class="callout">The <a href="./#resolver">resolver on the front page</a> shows both: the 0.1 rule, and a preview of the planned CLDR rules for Arabic's six forms.</p>
+
+    <h2 id="meta"><span class="n">4</span><code>$meta</code></h2>
+    <p><code>$meta</code> describes the file it sits in.</p>
+    <div class="sheet">
+      <div class="tab"><span>locales/ar.json</span><span class="tab__kind">JSON</span></div>
+<pre data-lang="json"><code>{
+  "$meta": { "locale": "ar", "direction": "rtl" },
+  "greeting": "مرحبًا، {name}!"
+}</code></pre>
+    </div>
+    <p><code>locale</code> must match the file's locale, <code>direction</code> is <code>"ltr"</code> or <code>"rtl"</code>, and unknown <code>$meta</code> keys are rejected.</p>
+
+    <h2 id="rejected"><span class="n">5</span>Rejected at load</h2>
+    <p>These raise <code>InvalidCatalogError</code> when the catalog is loaded, with the file path and a JSON pointer to the problem:</p>
+    <ul>
+      <li>numbers, booleans and arrays as values</li>
+      <li>duplicate keys</li>
+      <li><code>NaN</code> and <code>Infinity</code></li>
+      <li>key-path collisions</li>
+    </ul>
+    <p>Files are read as UTF-8 and a BOM is accepted, so non-ASCII text such as Turkish <span lang="tr">İ</span> and <span lang="tr">ı</span> round-trips unchanged.</p>
+
+    <h2 id="interpolation"><span class="n">6</span>Interpolation</h2>
+    <p>Placeholders are named fields only, compiled once when the catalog loads.</p>
+    <div class="table-wrap">
+      <table class="ref">
+        <thead><tr><th scope="col">Template</th><th scope="col">Result</th></tr></thead>
+        <tbody>
+          <tr><td><code>"Hello, {name}!"</code></td><td><code>t("greeting", name="Enes")</code> gives <code>Hello, Enes!</code></td></tr>
+          <tr><td><code>"Use {{name}} for a placeholder"</code></td><td><code>Use {name} for a placeholder</code>. Doubled braces are literal.</td></tr>
+          <tr><td><code>{0}</code>, <code>{user.name}</code>, <code>{items[0]}</code></td><td>Rejected at load.</td></tr>
+          <tr><td><code>{price:.2f}</code>, <code>{value!r}</code></td><td>Rejected at load. No format specs or conversions.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Format values in Python before passing them in, for example <code>t("total", price=f"{price:.2f}")</code>.</p>
+    <p>If a variable is not passed, the placeholder stays as literal <code>{name}</code> text and a debug record is logged on the <code>locjson</code> logger. With <code>missing="raise"</code>, an <code>InterpolationError</code> is raised instead.</p>
+
+    <h2 id="locales"><span class="n">7</span>Locale tags</h2>
+    <p>Locale tags are normalized to BCP 47, so <code>pt_BR</code>, <code>tr_TR.UTF-8</code> and <code>zh-hant-tw</code> become <code>pt-BR</code>, <code>tr-TR</code> and <code>zh-Hant-TW</code>. Legacy codes are mapped (<code>iw</code> → <code>he</code>).</p>
+    <p>Invalid tags raise <code>InvalidLocaleError</code> when passed to the constructor. At request time (<code>t(locale=...)</code>, <code>use(...)</code>) they fall back to <code>default_locale</code> instead of failing.</p>
+    <div class="sheet">
+      <div class="tab"><span>current locale, negotiation, direction</span><span class="tab__kind">Python</span></div>
+<pre data-lang="python"><code>with l10n.use("tr"):        # scoped: the previous locale is restored on exit
+    l10n.t("nav.home")      # 'Ana sayfa'
+
+l10n.set_locale("tr")       # for the current context, e.g. one request
+l10n.current_locale         # 'tr'
+
+l10n.negotiate("tr-TR,tr;q=0.9,en;q=0.8")  # 'tr', best match from Accept-Language
+l10n.direction("ar")                       # 'rtl'</code></pre>
+    </div>
+    <p>The current locale lives in a <code>ContextVar</code> per <code>Localizer</code>, so each asyncio task and thread sees its own value.</p>
+
+    <h2 id="fallback"><span class="n">8</span>Fallback chain</h2>
+    <p>For a requested locale the lookup chain is: the locale itself, then its explicit <code>fallbacks</code>, then its parents, then <code>default_locale</code>. Parents are script-aware, so Traditional Chinese never falls back to Simplified.</p>
+    <div class="table-wrap">
+      <table class="ref">
+        <thead><tr><th scope="col">Requested</th><th scope="col">Chain with <code>default_locale="en"</code>, <code>fallbacks={"pt-BR": ["pt"]}</code></th></tr></thead>
+        <tbody>
+          <tr><td><code>pt-BR</code></td><td><code>pt-BR</code> → <code>pt</code> → <code>en</code></td></tr>
+          <tr><td><code>tr-CY</code></td><td><code>tr-CY</code> → <code>tr</code> → <code>en</code></td></tr>
+          <tr><td><code>zh-TW</code></td><td><code>zh-TW</code> → <code>zh-Hant</code> → <code>en</code></td></tr>
+          <tr><td><code>zh-Hans-CN</code></td><td><code>zh-Hans-CN</code> → <code>zh-Hans</code> → <code>zh</code> → <code>en</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A key whose value is <code>""</code> or <code>null</code> counts as untranslated, so the lookup moves on to the next locale in the chain.</p>
+
+    <h2 id="missing"><span class="n">9</span>Missing translations</h2>
+    <div class="table-wrap">
+      <table class="ref">
+        <thead><tr><th scope="col"><code>missing=</code></th><th scope="col">When a key is missing in the whole chain</th></tr></thead>
+        <tbody>
+          <tr><td><code>"key"</code> (default)</td><td>Returns the key, e.g. <code>"nav.profile"</code>.</td></tr>
+          <tr><td><code>"empty"</code></td><td>Returns <code>""</code>.</td></tr>
+          <tr><td><code>"raise"</code></td><td>Raises <code>MissingTranslationError</code>, and makes missing variables and a missing <code>count</code> raise too.</td></tr>
+          <tr><td><code>callable(key, locale)</code></td><td>Returns whatever your function returns.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Every slip is logged at DEBUG level on the <code>locjson</code> logger, so you can surface them in development without noise in production.</p>
+
+    <h2 id="errors"><span class="n">10</span>Errors</h2>
+    <p>All exceptions inherit from <code>LocJsonError</code>.</p>
+    <div class="table-wrap">
+      <table class="ref">
+        <thead><tr><th scope="col">Exception</th><th scope="col">Raised when</th></tr></thead>
+        <tbody>
+          <tr><td><code>ConfigurationError</code></td><td>The <code>Localizer</code> is misconfigured, e.g. neither <code>path</code> nor <code>loader</code> is given.</td></tr>
+          <tr><td><code>InvalidLocaleError</code></td><td>A locale tag in the configuration is invalid.</td></tr>
+          <tr><td><code>InvalidCatalogError</code></td><td>A catalog file is invalid. Exposes <code>.path</code> and <code>.pointer</code> (RFC 6901).</td></tr>
+          <tr><td><code>MissingTranslationError</code></td><td>A key is missing under <code>missing="raise"</code>. Also a <code>LookupError</code>.</td></tr>
+          <tr><td><code>InterpolationError</code></td><td>A variable or <code>count</code> is missing under <code>missing="raise"</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="callout">The full API reference arrives with the documentation site planned for 1.0. Until then the <a href="https://github.com/fleizean/locjson#readme">README</a> is the source of truth.</p>
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="wrap foot__grid">
+    <img src="assets/icon.svg" alt="" width="34" height="34">
+    <div>
+      <p>locjson is released under the <a href="https://github.com/fleizean/locjson/blob/main/LICENSE">MIT License</a>. A full reference site is planned for 1.0.</p>
+      <p class="muted">Static HTML and CSS, a little JavaScript, no trackers, no cookies. Headings are set in Outfit (<a href="assets/fonts/OFL.txt">SIL Open Font License</a>).</p>
+    </div>
+    <ul>
+      <li><a href="https://github.com/fleizean/locjson">Source</a></li>
+      <li><a href="https://github.com/fleizean/locjson/issues">Issues</a></li>
+      <li><a href="https://github.com/fleizean/locjson/blob/main/CHANGELOG.md">Changelog</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>
