@@ -56,6 +56,7 @@ the result of ``policy(key, locale)``."""
 _MISSING_POLICIES = frozenset({"key", "empty", "raise"})
 _CHAIN_CACHE_MAX = 256
 _TAG_LOG_LIMIT = 64
+_UNREADABLE_COUNT = "count could not be read as a number"
 _STRICT_ENV = "LOCJSON_STRICT"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"", "0", "false", "no", "off"})
@@ -442,6 +443,13 @@ class Localizer:
             except (TypeError, ValueError) as error:
                 # The message names the type or problem, never the value.
                 return self._invalid_count(entry, key, tag, variables, str(error))
+            except ArithmeticError:
+                # Defense in depth: plural_operands never runs a count's own
+                # arithmetic, but a failure must still be a slip. Its text
+                # might show the value, so it is not used.
+                return self._invalid_count(
+                    entry, key, tag, variables, _UNREADABLE_COUNT
+                )
             variables["count"] = count
             if isinstance(entry, PluralEntry):
                 # The rule follows the catalog that supplied the entry.

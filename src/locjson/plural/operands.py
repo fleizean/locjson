@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import collections
 import math
+import operator
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, cast
 
@@ -72,6 +73,8 @@ def plural_operands(count: object) -> Operands:
     it was written with, so ``Decimal("1.50")`` has ``v = 2``, ``f = 50`` and
     ``t = 5``. A ``float`` is read through its shortest ``repr``: an integral
     float acts as the int, so ``1.0`` has ``v = 0``, and ``1.5`` has ``v = 1``.
+    A subclass (NumPy's ``np.float64`` is one) is read through the ``float``
+    value it holds; its own ``repr`` and arithmetic are never used.
     Negative counts use their absolute value.
 
     Error messages name the type or the problem, never the value, because a
@@ -93,21 +96,25 @@ def plural_operands(count: object) -> Operands:
     if isinstance(count, bool) or not isinstance(count, int | float | Decimal):
         msg = f"count must be an int, float or Decimal, not {type(count).__name__}"
         raise TypeError(msg)
+    # The built-in methods are called unbound, so a subclass's own overrides
+    # (NumPy's np.float64 has its own __abs__ and __repr__) never run here.
     if isinstance(count, int):
-        n = abs(int(count))
+        n = abs(operator.index(count))  # an exact int, without calling __int__
         if n >= _INT_LIMIT:
             raise ValueError(_TOO_MANY_DIGITS)
         return Operands(n, n, 0, 0, 0, 0)
     if isinstance(count, float):
-        if not math.isfinite(count):
+        value = abs(float.__float__(count))  # an exact float
+        if not math.isfinite(value):
             raise ValueError(_NOT_FINITE)
-        if count.is_integer():  # at most 309 digits
-            n = int(abs(count))
+        if value.is_integer():  # at most 309 digits
+            n = int(value)
             return Operands(n, n, 0, 0, 0, 0)
-        # repr is the shortest text that round-trips, so 1.5 reads as "1.5".
-        return _decimal_operands(Decimal(repr(abs(count))))
+        # The shortest text that round-trips, so 1.5 reads as "1.5". repr() of
+        # a subclass may not be a number at all ("np.float64(1.5)").
+        return _decimal_operands(Decimal(float.__repr__(value)))
     # copy_abs, not abs(): abs() rounds to the context precision.
-    return _decimal_operands(count.copy_abs())
+    return _decimal_operands(Decimal.copy_abs(count))
 
 
 def _decimal_operands(n: Decimal) -> Operands:
