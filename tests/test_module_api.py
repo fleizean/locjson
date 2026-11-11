@@ -14,6 +14,7 @@ from locjson import (
     DictLoader,
     Localizer,
     LocJsonError,
+    MissingTranslationError,
 )
 from locjson import locale as locale_module
 
@@ -37,11 +38,14 @@ PUBLIC = {
     "Localizer",
     "MissingTranslationError",
     "RawSource",
+    "Translator",
     "__version__",
     "direction",
+    "for_locale",
     "get_localizer",
     "has",
     "negotiate",
+    "scope",
     "set_locale",
     "setup",
     "t",
@@ -64,8 +68,10 @@ def _no_default_localizer() -> Iterator[None]:
         lambda: locjson.has("nav.home"),
         lambda: locjson.use("tr"),
         lambda: locjson.set_locale("tr"),
+        lambda: locjson.for_locale("tr"),
+        lambda: locjson.scope("nav"),
     ],
-    ids=["get_localizer", "t", "has", "use", "set_locale"],
+    ids=["get_localizer", "t", "has", "use", "set_locale", "for_locale", "scope"],
 )
 def test_calls_before_setup_raise(call: Callable[[], object]) -> None:
     with pytest.raises(LocJsonError, match=r"^call locjson\.setup\(\) first$"):
@@ -140,6 +146,32 @@ def test_functions_delegate_to_the_default(sample_catalogs: Catalogs) -> None:
 
     assert contextvars.copy_context().run(body) == ("ar", "الرئيسية")
     assert l10n.current_locale == "en"
+
+
+def test_for_locale_and_scope_delegate(sample_catalogs: Catalogs) -> None:
+    l10n = locjson.setup(loader=DictLoader(sample_catalogs))
+    tr = locjson.for_locale("tr")
+    assert isinstance(tr, locjson.Translator)
+    assert tr("nav.home") == "Ana Sayfa"
+    assert l10n.current_locale == "en"
+    inbox = locjson.scope("inbox")
+    assert inbox("messages", count=3) == "You have 3 messages"
+    assert inbox.for_locale("tr")("messages", count=3) == "3 mesajınız var"
+    with pytest.raises(ConfigurationError, match="prefix"):
+        locjson.scope("a..b")
+
+
+def test_setup_passes_strict_through(
+    sample_catalogs: Catalogs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    l10n = locjson.setup(loader=DictLoader(sample_catalogs), strict=True)
+    assert l10n.strict
+    with pytest.raises(MissingTranslationError):
+        locjson.t("no.such.key")
+    assert not locjson.setup(loader=DictLoader(sample_catalogs), strict=False).strict
+    monkeypatch.setenv("LOCJSON_STRICT", "1")
+    assert locjson.setup(loader=DictLoader(sample_catalogs)).strict
+    assert not locjson.setup(loader=DictLoader(sample_catalogs), strict=False).strict
 
 
 def test_negotiate_and_direction_are_the_pure_functions() -> None:
