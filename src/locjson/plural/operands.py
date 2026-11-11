@@ -17,6 +17,7 @@ library and loads none of the modules that ``import locjson`` must avoid.
 from __future__ import annotations
 
 import collections
+import math
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final, cast
 
@@ -44,6 +45,10 @@ This is a resource bound, not a CLDR rule: it keeps operand derivation and
 ``{count}`` rendering small whatever value a caller passes.
 """
 
+_INT_LIMIT: Final = 10**MAX_COUNT_DIGITS  # the smallest int with too many digits
+_NOT_FINITE: Final = "count must be a finite number"
+_TOO_MANY_DIGITS: Final = f"count has more than {MAX_COUNT_DIGITS} digits"
+
 
 class Operands(_OperandFields):
     """The CLDR plural operands ``n i v w f t`` of one count (a ``NamedTuple``).
@@ -69,42 +74,51 @@ def plural_operands(count: object) -> Operands:
     float acts as the int, so ``1.0`` has ``v = 0``, and ``1.5`` has ``v = 1``.
     Negative counts use their absolute value.
 
+    Error messages name the type or the problem, never the value, because a
+    count may come from request input.
+
     Args:
-        count: The quantity: an ``int``, ``float`` or ``Decimal``.
+        count: The quantity: an ``int`` (not a ``bool``), ``float`` or
+            ``Decimal``, or an instance of a subclass of one of them.
 
     Returns:
         The operands.
 
     Raises:
-        TypeError: If ``count`` is not an ``int``, ``float`` or ``Decimal``.
-        ValueError: If ``count`` is not a finite number.
+        TypeError: If ``count`` is a ``bool`` or not an ``int``, ``float`` or
+            ``Decimal``.
+        ValueError: If ``count`` is NaN or infinite, or has more than
+            :data:`MAX_COUNT_DIGITS` integer or fraction digits.
     """
-    if type(count) is int:  # the common case, without isinstance chains
-        n = abs(count)
-        return Operands(n, n, 0, 0, 0, 0)
+    if isinstance(count, bool) or not isinstance(count, int | float | Decimal):
+        msg = f"count must be an int, float or Decimal, not {type(count).__name__}"
+        raise TypeError(msg)
     if isinstance(count, int):
         n = abs(int(count))
+        if n >= _INT_LIMIT:
+            raise ValueError(_TOO_MANY_DIGITS)
         return Operands(n, n, 0, 0, 0, 0)
     if isinstance(count, float):
-        if count.is_integer():
+        if not math.isfinite(count):
+            raise ValueError(_NOT_FINITE)
+        if count.is_integer():  # at most 309 digits
             n = int(abs(count))
             return Operands(n, n, 0, 0, 0, 0)
         # repr is the shortest text that round-trips, so 1.5 reads as "1.5".
         return _decimal_operands(Decimal(repr(abs(count))))
-    if isinstance(count, Decimal):
-        # copy_abs, not abs(): abs() rounds to the context precision.
-        return _decimal_operands(count.copy_abs())
-    msg = f"count must be an int, float or Decimal, not {type(count).__name__}"
-    raise TypeError(msg)
+    # copy_abs, not abs(): abs() rounds to the context precision.
+    return _decimal_operands(count.copy_abs())
 
 
 def _decimal_operands(n: Decimal) -> Operands:
     # Checked before anything else: comparing a signalling NaN raises.
     if not n.is_finite():
-        msg = "count must be a finite number"
-        raise ValueError(msg)
+        raise ValueError(_NOT_FINITE)
     _, digits, exponent = n.as_tuple()
     exponent = cast("int", exponent)  # a str only for NaN and infinities
+    # Checked before int(n): int(Decimal("1e999999999")) would not finish.
+    if n.adjusted() >= MAX_COUNT_DIGITS or exponent < -MAX_COUNT_DIGITS:
+        raise ValueError(_TOO_MANY_DIGITS)
     i = int(n)  # truncates toward zero, never rounds
     if exponent >= 0:
         return Operands(n, i, 0, 0, 0, 0)

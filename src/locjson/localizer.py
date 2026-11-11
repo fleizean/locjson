@@ -96,12 +96,14 @@ class Localizer:
             ``no``, ``off`` or an empty value leave it off (case-insensitive).
             For example ``strict=settings.DEBUG``.
 
-    Slips (a missing key, a missing variable or a plural message without
-    ``count``) are lenient unless strict. Each is logged on the ``locjson``
-    logger at WARNING the first time per ``(kind, locale, key)`` for this
-    Localizer, and at DEBUG afterwards. Records name keys, locales and
-    placeholders, never variable values. Invalid request-time locale tags are
-    logged at DEBUG only, because they come from request input.
+    Slips (a missing key, a missing variable, a plural message without
+    ``count`` or an invalid ``count``) are lenient unless strict. Each is
+    logged on the ``locjson`` logger at WARNING the first time per
+    ``(kind, locale, key)`` for this Localizer, and at DEBUG afterwards.
+    Records name keys, locales, placeholders and the type or problem of an
+    invalid count, never variable or count values. Invalid request-time
+    locale tags are logged at DEBUG only, because they come from request
+    input.
 
     Raises:
         ConfigurationError: If both or neither of ``path`` and ``loader`` are
@@ -396,9 +398,18 @@ class Localizer:
             locale: The locale to translate into. Defaults to
                 :attr:`current_locale`. An invalid tag falls back to the
                 default locale.
-            count: The quantity for plural messages. It is also available to
-                templates as ``{count}``. A plural message without ``count``
-                uses its ``other`` form.
+            count: The quantity for plural messages: an ``int``, ``float`` or
+                ``Decimal``. The form follows the CLDR plural rule of the
+                catalog that holds the message, and a ``zero`` form wins for
+                any count equal to 0. ``Decimal`` counts keep their visible
+                fraction digits (``Decimal("1.0")`` is ``other`` in English,
+                ``one`` in Turkish); a float is read through its shortest
+                ``repr``. ``count`` is also available to templates as
+                ``{count}``. A plural message without ``count`` uses its
+                ``other`` form. An invalid count (a ``bool``, a string, NaN,
+                an infinity, any other type, or more than 1000 integer or
+                fraction digits) is a slip: the ``other`` form is used and
+                ``{count}`` stays literal.
             context: Reserved for a future version; must be ``None``.
             **variables: Placeholder values. A placeholder without a value is
                 kept as literal ``{name}`` text.
@@ -412,8 +423,8 @@ class Localizer:
             MissingTranslationError: If the key is missing everywhere and the
                 Localizer is strict or the policy is ``"raise"``.
             InterpolationError: When strict or under ``missing="raise"``, if a
-                placeholder has no value or a plural message is called without
-                ``count``.
+                placeholder has no value, a plural message is called without
+                ``count``, or ``count`` is invalid.
             InvalidCatalogError: If a catalog needed for the lookup is invalid.
         """
         reserved: object = context  # typed None, but callers may pass anything
@@ -426,7 +437,11 @@ class Localizer:
             return self._on_missing(key, tag)
         entry, rule = found
         if count is not None:
-            operands = plural_operands(count)
+            try:
+                operands = plural_operands(count)
+            except (TypeError, ValueError) as error:
+                # The message names the type or problem, never the value.
+                return self._invalid_count(entry, key, tag, variables, str(error))
             variables["count"] = count
             if isinstance(entry, PluralEntry):
                 # The rule follows the catalog that supplied the entry.
@@ -525,13 +540,46 @@ class Localizer:
             key,
             tag,
         )
+        return self._render_without_count(entry, key, tag, variables)
 
-        def on_missing(key: str, locale: str, name: str) -> None:
-            # The missing count is already reported; other names still are.
-            if name != "count":
-                self._on_variable(key, locale, name)
+    def _invalid_count(
+        self,
+        entry: Entry,
+        key: str,
+        tag: str,
+        variables: dict[str, object],
+        reason: str,
+    ) -> str:
+        # ``reason`` names the count's type or problem; the value may come
+        # from request input and is never logged or put in an error.
+        if self._raises:
+            msg = f"invalid count for key {key!r}: {reason}"
+            raise InterpolationError(key, "count", msg)
+        self._slips.report(
+            "invalid count",
+            tag,
+            key,
+            "locjson: invalid count for key %r in %r (%s); using 'other'",
+            key,
+            tag,
+            reason,
+        )
+        return self._render_without_count(entry, key, tag, variables)
 
-        return entry.other.render(variables, key=key, locale=tag, on_missing=on_missing)
+    def _render_without_count(
+        self, entry: Entry, key: str, tag: str, variables: dict[str, object]
+    ) -> str:
+        # The other form of a plural, or the plain template, with {count}
+        # left literal. Only reached on the lenient slip paths.
+        template = entry.other if isinstance(entry, PluralEntry) else entry
+        return template.render(
+            variables, key=key, locale=tag, on_missing=self._on_variable_but_count
+        )
+
+    def _on_variable_but_count(self, key: str, locale: str, name: str) -> None:
+        # The count slip is already reported; other missing names still are.
+        if name != "count":
+            self._on_variable(key, locale, name)
 
     def _on_missing(self, key: str, tag: str) -> str:
         if self._raises:

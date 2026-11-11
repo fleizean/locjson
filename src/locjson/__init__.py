@@ -170,7 +170,9 @@ def t(
         LocJsonError: If :func:`setup` has not been called, or ``context`` is
             not ``None``.
         MissingTranslationError: If the key is missing and slips raise.
-        InterpolationError: If a value is missing and slips raise.
+        InterpolationError: If a value or ``count`` is missing, or ``count``
+            is invalid (a ``bool``, a string, NaN, an infinity or any other
+            non-number), and slips raise.
         InvalidCatalogError: If a catalog needed for the lookup is invalid.
     """
     return get_localizer().t(
